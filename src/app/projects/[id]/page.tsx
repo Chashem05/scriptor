@@ -34,18 +34,28 @@ type Line = {
   character: Character | null
 }
 
-// Puter.js voices (Amazon Polly voices)
+// Valid Amazon Polly voices for Puter.js (FREE)
 const VOICES = [
   { id: 'Matthew', name: 'Matthew (Male, US)' },
   { id: 'Joanna', name: 'Joanna (Female, US)' },
   { id: 'Joey', name: 'Joey (Male, US)' },
   { id: 'Salli', name: 'Salli (Female, US)' },
+  { id: 'Kendra', name: 'Kendra (Female, US)' },
+  { id: 'Kimberly', name: 'Kimberly (Female, US)' },
+  { id: 'Kevin', name: 'Kevin (Male, Child)' },
   { id: 'Ivy', name: 'Ivy (Female, Child)' },
   { id: 'Justin', name: 'Justin (Male, Child)' },
   { id: 'Brian', name: 'Brian (Male, UK)' },
   { id: 'Amy', name: 'Amy (Female, UK)' },
   { id: 'Emma', name: 'Emma (Female, UK)' },
+  { id: 'Arthur', name: 'Arthur (Male, UK)' },
+  { id: 'Olivia', name: 'Olivia (Female, UK)' },
+  { id: 'Stephen', name: 'Stephen (Male, US)' },
+  { id: 'Ruth', name: 'Ruth (Female, US)' },
+  { id: 'Gregory', name: 'Gregory (Male, US)' },
 ]
+
+const DEFAULT_VOICE = 'Matthew'
 
 export default function ProjectPage() {
   const params = useParams()
@@ -134,6 +144,12 @@ export default function ProjectPage() {
     })
   }
 
+  function getValidVoice(voice: string | undefined): string {
+    if (!voice) return DEFAULT_VOICE
+    const validVoice = VOICES.find(v => v.id === voice)
+    return validVoice ? voice : DEFAULT_VOICE
+  }
+
   async function speakWithPuter(text: string, voice: string): Promise<boolean> {
     if (!window.puter) {
       console.error('Puter not loaded')
@@ -141,8 +157,9 @@ export default function ProjectPage() {
     }
     
     try {
+      const validVoice = getValidVoice(voice)
       const audio = await window.puter.ai.txt2speech(text, {
-        voice: voice,
+        voice: validVoice,
         engine: 'neural'
       })
       
@@ -193,7 +210,7 @@ export default function ProjectPage() {
       }
       
       const char = characters.find(c => c.id === charId)
-      const voice = char?.voice || 'Matthew'
+      const voice = getValidVoice(char?.voice)
       
       await speakWithPuter(line.content, voice)
       await new Promise(r => setTimeout(r, 300))
@@ -304,7 +321,7 @@ export default function ProjectPage() {
                         <div className="text-sm text-muted-foreground">{char._count?.lines || 0} lines</div>
                       </div>
                       <select
-                        value={char.voice || 'Matthew'}
+                        value={getValidVoice(char.voice)}
                         onChange={(e) => handleVoiceChange(char.id, e.target.value)}
                         className="border rounded p-2"
                       >
