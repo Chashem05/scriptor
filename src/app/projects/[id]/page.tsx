@@ -3,30 +3,19 @@
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import Script from 'next/script'
-
-declare global {
-  interface Window {
-    puter: {
-      ai: {
-        txt2speech: (text: string, options?: { voice?: string; engine?: string }) => Promise<HTMLAudioElement>
-      }
-    }
-  }
-}
 
 type Character = { id: string; name: string; voice: string; color: string; _count?: { lines: number } }
 type Line = { id: string; lineNumber: number; type: string; content: string; character: Character | null }
 
 const VOICES = [
-  { id: 'Matthew', name: 'Matthew', style: 'Warm Narrator' },
-  { id: 'Joanna', name: 'Joanna', style: 'Friendly' },
-  { id: 'Joey', name: 'Joey', style: 'Casual' },
-  { id: 'Salli', name: 'Salli', style: 'Professional' },
-  { id: 'Brian', name: 'Brian', style: 'British' },
-  { id: 'Amy', name: 'Amy', style: 'British Female' },
-  { id: 'Stephen', name: 'Stephen', style: 'Sharp' },
-  { id: 'Gregory', name: 'Gregory', style: 'Dry Comic' },
+  { id: 'josh', name: 'Josh', style: 'Male, Deep' },
+  { id: 'adam', name: 'Adam', style: 'Male, Deep' },
+  { id: 'antoni', name: 'Antoni', style: 'Male, Warm' },
+  { id: 'arnold', name: 'Arnold', style: 'Male, Crisp' },
+  { id: 'sam', name: 'Sam', style: 'Male, Raspy' },
+  { id: 'rachel', name: 'Rachel', style: 'Female, Calm' },
+  { id: 'domi', name: 'Domi', style: 'Female, Strong' },
+  { id: 'bella', name: 'Bella', style: 'Female, Soft' },
 ]
 
 export default function ProjectPage() {
@@ -36,16 +25,25 @@ export default function ProjectPage() {
   const [characters, setCharacters] = useState<Character[]>([])
   const [lines, setLines] = useState<Line[]>([])
   const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
   const [myRole, setMyRole] = useState('')
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentLine, setCurrentLine] = useState(-1)
   const [muted, setMuted] = useState<Set<string>>(new Set())
   const [volumes, setVolumes] = useState<Record<string, number>>({})
-  const [puterReady, setPuterReady] = useState(false)
+  const [ttsReady, setTtsReady] = useState(false)
   const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  useEffect(() => { loadData() }, [id])
+  useEffect(() => { loadData(); checkTTS() }, [id])
+
+  async function checkTTS() {
+    try {
+      const res = await fetch('/api/tts')
+      const data = await res.json()
+      setTtsReady(data.configured)
+    } catch { setTtsReady(false) }
+  }
 
   async function loadData() {
     const [scriptRes, charRes, linesRes] = await Promise.all([
@@ -94,22 +92,47 @@ export default function ProjectPage() {
   }
 
   function getVoice(v?: string) {
-    return VOICES.find(x => x.id === v)?.id || 'Matthew'
+    return VOICES.find(x => x.id === v)?.id || 'josh'
   }
 
-  async function speak(text: string, voice: string, volume: number): Promise<void> {
-    if (!window.puter) return
+  async function speak(text: string, voice: string, volume: number): Promise<boolean> {
     try {
-      const audio = await window.puter.ai.txt2speech(text, { voice: getVoice(voice), engine: 'neural' })
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: getVoice(voice) })
+      })
+      
+      if (!res.ok) {
+        const err = await res.json()
+        setMessage(`TTS Error: ${err.error}`)
+        return false
+      }
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
       audio.volume = volume / 100
       audioRef.current = audio
-      await new Promise<void>(r => { audio.onended = () => r(); audio.play() })
-    } catch (e) { console.error(e) }
+      
+      return new Promise(resolve => {
+        audio.onended = () => { URL.revokeObjectURL(url); resolve(true) }
+        audio.onerror = () => { URL.revokeObjectURL(url); resolve(false) }
+        audio.play().catch(() => resolve(false))
+      })
+    } catch (e) {
+      console.error(e)
+      return false
+    }
   }
 
   async function play() {
-    if (!puterReady || lines.length === 0) return
+    if (!ttsReady || lines.length === 0) {
+      setMessage('ElevenLabs not configured. Add ELEVENLABS_API_KEY in Render.')
+      return
+    }
     setIsPlaying(true)
+    setMessage('')
     playingRef.current = true
 
     for (let i = 0; i < lines.length; i++) {
@@ -124,7 +147,7 @@ export default function ProjectPage() {
       }
 
       const char = characters.find(c => c.id === charId)
-      await speak(line.content, char?.voice || 'Matthew', volumes[charId || ''] || 80)
+      await speak(line.content, char?.voice || 'josh', volumes[charId || ''] || 80)
       await new Promise(r => setTimeout(r, 200))
     }
 
@@ -140,17 +163,24 @@ export default function ProjectPage() {
     audioRef.current?.pause()
   }
 
+  async function testVoice() {
+    setMessage('Testing ElevenLabs...')
+    const success = await speak("Hello! This is a test of ElevenLabs voice.", 'josh', 80)
+    setMessage(success ? '✓ ElevenLabs working!' : '✗ ElevenLabs failed')
+  }
+
   const dialogueCount = lines.filter(l => l.type === 'dialogue').length
   const directionCount = lines.filter(l => l.type === 'direction').length
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Script src="https://js.puter.com/v2/" onLoad={() => setPuterReady(true)} />
-
       {/* Header */}
       <header className="bg-white border-b px-6 py-4">
         <Link href="/dashboard" className="text-sm text-gray-500 hover:underline">← Back</Link>
         <h1 className="text-2xl font-bold mt-2">Scriptor Rehearsal</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          {ttsReady ? '✓ ElevenLabs connected' : '⚠️ Add ELEVENLABS_API_KEY in Render'}
+        </p>
         <div className="flex gap-8 mt-4 text-center">
           <div><div className="text-xs text-gray-500">Characters</div><div className="text-2xl font-bold">{characters.length}</div></div>
           <div><div className="text-xs text-gray-500">Dialogue</div><div className="text-2xl font-bold">{dialogueCount}</div></div>
@@ -166,6 +196,15 @@ export default function ProjectPage() {
           </button>
         ))}
       </nav>
+
+      {/* Message */}
+      {message && (
+        <div className={`max-w-6xl mx-auto mt-4 px-4`}>
+          <div className={`p-3 rounded ${message.includes('✗') || message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+            {message}
+          </div>
+        </div>
+      )}
 
       <main className="max-w-6xl mx-auto p-6">
         {/* Upload */}
@@ -194,7 +233,7 @@ export default function ProjectPage() {
         {/* Voices */}
         {tab === 'voices' && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-lg font-semibold mb-4">Voice Assignment</h2>
+            <h2 className="text-lg font-semibold mb-4">Voice Assignment (ElevenLabs)</h2>
             {characters.map(c => (
               <div key={c.id} className="flex items-center gap-4 p-4 border-b">
                 <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c.color }} />
@@ -221,7 +260,8 @@ export default function ProjectPage() {
                 </select>
               </div>
               <div className="flex gap-2 mb-4">
-                <button onClick={play} disabled={!puterReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
+                <button onClick={testVoice} className="px-4 py-2 border rounded text-sm">🔊 Test</button>
+                <button onClick={play} disabled={!ttsReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
                 <button onClick={stop} className="px-4 py-2 border rounded text-sm">Stop</button>
               </div>
               <div className="space-y-2 max-h-96 overflow-auto">

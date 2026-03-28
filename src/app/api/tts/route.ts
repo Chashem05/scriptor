@@ -1,71 +1,60 @@
 import { NextResponse } from 'next/server'
 
-const GOOGLE_API_KEY = process.env.GOOGLE_CLOUD_API_KEY
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
 
-// Google Cloud TTS voices
-const VOICES: Record<string, { name: string; ssmlGender: string }> = {
-  'male-1': { name: 'en-US-Casual-K', ssmlGender: 'MALE' },
-  'male-2': { name: 'en-US-Neural2-D', ssmlGender: 'MALE' },
-  'male-3': { name: 'en-US-Neural2-J', ssmlGender: 'MALE' },
-  'female-1': { name: 'en-US-Neural2-C', ssmlGender: 'FEMALE' },
-  'female-2': { name: 'en-US-Neural2-E', ssmlGender: 'FEMALE' },
-  'female-3': { name: 'en-US-Neural2-F', ssmlGender: 'FEMALE' },
-  'neutral': { name: 'en-US-Neural2-A', ssmlGender: 'NEUTRAL' },
+// ElevenLabs voice IDs
+const VOICES: Record<string, string> = {
+  'rachel': '21m00Tcm4TlvDq8ikWAM',
+  'domi': 'AZnzlk1XvdvUeBnXmlld',
+  'bella': 'EXAVITQu4vr4xnSDxMaL',
+  'antoni': 'ErXwobaYiN019PkySvjV',
+  'josh': 'TxGEqnHWrfWFTfGW9XjX',
+  'arnold': 'VR6AewLTigWG4xSOukaG',
+  'adam': 'pNInz6obpgDQGcFmaJgB',
+  'sam': 'yoZ06aMxZJJ28mfd3POQ',
 }
 
 export async function POST(req: Request) {
   try {
-    if (!GOOGLE_API_KEY) {
-      console.log('No Google Cloud API key found')
+    if (!ELEVENLABS_API_KEY) {
       return NextResponse.json({ error: 'NO_API_KEY' }, { status: 500 })
     }
 
-    const { text, voice = 'male-1' } = await req.json()
+    const { text, voice = 'josh' } = await req.json()
 
     if (!text) {
       return NextResponse.json({ error: 'Text is required' }, { status: 400 })
     }
 
-    const voiceConfig = VOICES[voice] || VOICES['male-1']
+    const voiceId = VOICES[voice] || VOICES['josh']
 
-    const response = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_API_KEY}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+    const response = await fetch(`https://api.us.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'application/json',
+        'xi-api-key': ELEVENLABS_API_KEY,
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_flash_v2_5',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
         },
-        body: JSON.stringify({
-          input: { text },
-          voice: {
-            languageCode: 'en-US',
-            name: voiceConfig.name,
-            ssmlGender: voiceConfig.ssmlGender,
-          },
-          audioConfig: {
-            audioEncoding: 'MP3',
-            speakingRate: 1.0,
-            pitch: 0,
-          },
-        }),
-      }
-    )
+      }),
+    })
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error('Google TTS API error:', response.status, errorText)
-      return NextResponse.json({ error: 'GOOGLE_TTS_ERROR', details: errorText }, { status: 500 })
+      console.error('ElevenLabs error:', response.status, errorText)
+      return NextResponse.json({ error: 'ELEVENLABS_ERROR', details: errorText }, { status: 500 })
     }
 
-    const data = await response.json()
-    
-    // Google returns base64 encoded audio
-    const audioBuffer = Buffer.from(data.audioContent, 'base64')
+    const audioBuffer = await response.arrayBuffer()
     
     return new NextResponse(audioBuffer, {
-      headers: {
-        'Content-Type': 'audio/mpeg',
-      },
+      headers: { 'Content-Type': 'audio/mpeg' },
     })
   } catch (error) {
     console.error('TTS error:', error)
@@ -74,12 +63,8 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  const hasKey = !!GOOGLE_API_KEY
   return NextResponse.json({
-    configured: hasKey,
-    voices: Object.keys(VOICES).map(id => ({
-      id,
-      name: id.replace('-', ' ').replace(/\b\w/g, c => c.toUpperCase())
-    }))
+    configured: !!ELEVENLABS_API_KEY,
+    voices: Object.keys(VOICES).map(id => ({ id, name: id.charAt(0).toUpperCase() + id.slice(1) }))
   })
 }
