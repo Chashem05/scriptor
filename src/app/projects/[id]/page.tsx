@@ -23,13 +23,7 @@ type Line = {
   character: Character | null
 }
 
-const VOICES = [
-  { id: 'male-1', name: 'Adam (Deep Male)' },
-  { id: 'male-2', name: 'Arnold (Strong Male)' },
-  { id: 'female-1', name: 'Bella (Warm Female)' },
-  { id: 'female-2', name: 'Gigi (Bright Female)' },
-  { id: 'neutral', name: 'Daniel (Neutral)' },
-]
+type Voice = { id: string; name: string }
 
 export default function ProjectPage() {
   const params = useParams()
@@ -40,20 +34,27 @@ export default function ProjectPage() {
   const [savedScript, setSavedScript] = useState<string | null>(null)
   const [characters, setCharacters] = useState<Character[]>([])
   const [lines, setLines] = useState<Line[]>([])
+  const [voices, setVoices] = useState<Voice[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [myRole, setMyRole] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentLine, setCurrentLine] = useState(0)
+  const [currentLine, setCurrentLine] = useState(-1)
   const [mutedChars, setMutedChars] = useState<Set<string>>(new Set())
-  const [useElevenLabs, setUseElevenLabs] = useState(true)
-  const [ttsStatus, setTtsStatus] = useState('')
+  const [ttsEnabled, setTtsEnabled] = useState(true)
+  const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const abortRef = useRef(false)
 
   useEffect(() => {
     loadData()
+    loadVoices()
   }, [id])
+
+  async function loadVoices() {
+    const res = await fetch('/api/tts')
+    const data = await res.json()
+    if (data.voices) setVoices(data.voices)
+  }
 
   async function loadData() {
     const scriptRes = await fetch(`/api/projects/${id}/script`)
@@ -119,114 +120,120 @@ export default function ProjectPage() {
     })
   }
 
-  async function handlePlay() {
-    if (lines.length === 0) return
-    abortRef.current = false
-    setIsPlaying(true)
-    setCurrentLine(0)
-    await playLine(0)
-  }
+  async function speakWithElevenLabs(text: string, voice: string): Promise<void> {
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice })
+      })
 
-  async function playLine(index: number) {
-    if (abortRef.current || index >= lines.length) {
-      setIsPlaying(false)
-      setTtsStatus('')
-      return
-    }
-    
-    setCurrentLine(index)
-    const line = lines[index]
-    
-    // Skip if muted, direction, or my role
-    const charId = line.character?.id
-    if (line.type !== 'dialogue' || !line.character || (charId && (mutedChars.has(charId) || charId === myRole))) {
-      setTimeout(() => playLine(index + 1), 300)
-      return
-    }
+      if (!res.ok) {
+        // Fallback to browser TTS
+        return speakWithBrowser(text)
+      }
 
-    if (useElevenLabs) {
-      try {
-        setTtsStatus(`Generating: ${line.character.name}...`)
-        
-        const res = await fetch('/api/tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            text: line.content, 
-            voice: line.character.voice 
-          })
-        })
-
-        if (!res.ok) {
-          // Fallback to browser TTS
-          console.log('ElevenLabs failed, using browser TTS')
-          await playWithBrowserTTS(line, index)
-          return
-        }
-
-        const audioBlob = await res.blob()
-        const audioUrl = URL.createObjectURL(audioBlob)
-        
-        if (audioRef.current) {
-          audioRef.current.pause()
-        }
-        
+      const audioBlob = await res.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+      
+      return new Promise((resolve) => {
         const audio = new Audio(audioUrl)
         audioRef.current = audio
-        setTtsStatus(`Playing: ${line.character.name}`)
-        
         audio.onended = () => {
           URL.revokeObjectURL(audioUrl)
-          if (!abortRef.current) playLine(index + 1)
+          resolve()
         }
         audio.onerror = () => {
           URL.revokeObjectURL(audioUrl)
-          if (!abortRef.current) playLine(index + 1)
+          resolve()
         }
-        
-        await audio.play()
-      } catch (error) {
-        console.error('TTS error:', error)
-        await playWithBrowserTTS(line, index)
-      }
-    } else {
-      await playWithBrowserTTS(line, index)
+        audio.play()
+      })
+    } catch (error) {
+      console.error('ElevenLabs error:', error)
+      return speakWithBrowser(text)
     }
   }
 
-  async function playWithBrowserTTS(line: Line, index: number) {
-    return new Promise<void>((resolve) => {
-      if ('speechSynthesis' in window && line.character) {
-        setTtsStatus(`Speaking: ${line.character.name}`)
-        const utterance = new SpeechSynthesisUtterance(line.content)
-        utterance.rate = 0.9
-        utterance.onend = () => {
-          if (!abortRef.current) playLine(index + 1)
-          resolve()
-        }
-        utterance.onerror = () => {
-          if (!abortRef.current) playLine(index + 1)
-          resolve()
-        }
-        speechSynthesis.speak(utterance)
-      } else {
-        setTimeout(() => {
-          if (!abortRef.current) playLine(index + 1)
-          resolve()
-        }, 1000)
-      }
+  function speakWithBrowser(text: string): Promise<void> {
+    return new Promise((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(text)
+      utterance.rate = 0.9
+      utterance.onend = () => resolve()
+      utterance.onerror = () => resolve()
+      speechSynthesis.speak(utterance)
     })
   }
 
-  function handleStop() {
-    abortRef.current = true
-    setIsPlaying(false)
-    setTtsStatus('')
+  async function handlePlay() {
+    if (lines.length === 0) return
+    
+    speechSynthesis.cancel()
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
     }
-    speechSynthesis?.cancel()
+    
+    setIsPlaying(true)
+    playingRef.current = true
+    
+    for (let i = 0; i < lines.length; i++) {
+      if (!playingRef.current) break
+      
+      setCurrentLine(i)
+      const line = lines[i]
+      const charId = line.character?.id
+      
+      // Skip if muted or it's my role
+      if (charId && (mutedChars.has(charId) || charId === myRole)) {
+        await new Promise(r => setTimeout(r, 1000))
+        continue
+      }
+      
+      // Skip stage directions
+      if (line.type === 'direction') {
+        await new Promise(r => setTimeout(r, 500))
+        continue
+      }
+      
+      // Get character's voice
+      const char = characters.find(c => c.id === charId)
+      const voice = char?.voice || 'josh'
+      
+      // Speak the line
+      if (ttsEnabled) {
+        await speakWithElevenLabs(line.content, voice)
+      } else {
+        await speakWithBrowser(line.content)
+      }
+      
+      await new Promise(r => setTimeout(r, 300))
+    }
+    
+    setIsPlaying(false)
+    setCurrentLine(-1)
+    playingRef.current = false
+  }
+
+  function handleStop() {
+    playingRef.current = false
+    setIsPlaying(false)
+    setCurrentLine(-1)
+    speechSynthesis.cancel()
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+  }
+
+  async function testVoice() {
+    setMessage('Testing ElevenLabs voice...')
+    try {
+      await speakWithElevenLabs("Hello! This is a test of the ElevenLabs voice.", 'josh')
+      setMessage('Voice test complete!')
+    } catch (e) {
+      setMessage('Voice test failed - using browser fallback')
+    }
   }
 
   return (
@@ -236,7 +243,7 @@ export default function ProjectPage() {
           ← Back to Dashboard
         </Link>
 
-        <div className="flex gap-2 mb-6 flex-wrap">
+        <div className="flex gap-2 mb-6">
           <Button variant={tab === 'script' ? 'default' : 'outline'} onClick={() => setTab('script')}>
             1. Script
           </Button>
@@ -258,13 +265,13 @@ export default function ProjectPage() {
           <Card>
             <CardHeader>
               <CardTitle>Upload Script</CardTitle>
-              <CardDescription>Use format: CHARACTER NAME: Dialogue text</CardDescription>
+              <CardDescription>Format: CHARACTER NAME: Dialogue text</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <textarea
                 value={script}
                 onChange={(e) => setScript(e.target.value)}
-                placeholder={`Example:\n\nJULIET: O Romeo, Romeo! Wherefore art thou Romeo?\n\nROMEO: Shall I hear more, or shall I speak at this?\n\n[Stage direction]`}
+                placeholder={`JULIET: O Romeo, Romeo! Wherefore art thou Romeo?\n\nROMEO: Shall I hear more, or shall I speak at this?\n\n[Stage direction in brackets]`}
                 className="w-full h-80 p-3 border rounded-md font-mono text-sm"
               />
               <div className="flex gap-2">
@@ -289,10 +296,10 @@ export default function ProjectPage() {
             </CardHeader>
             <CardContent>
               {characters.length === 0 ? (
-                <p className="text-muted-foreground">Parse your script first.</p>
+                <p className="text-muted-foreground">No characters yet. Parse your script first.</p>
               ) : (
                 <div className="space-y-4">
-                  {characters.map(char => (
+                  {characters.map((char) => (
                     <div key={char.id} className="flex items-center gap-4 p-3 border rounded">
                       <div className="w-4 h-4 rounded-full" style={{ backgroundColor: char.color }} />
                       <div className="flex-1">
@@ -304,9 +311,22 @@ export default function ProjectPage() {
                         onChange={(e) => handleVoiceChange(char.id, e.target.value)}
                         className="border rounded p-2"
                       >
-                        {VOICES.map(v => (
-                          <option key={v.id} value={v.id}>{v.name}</option>
-                        ))}
+                        {voices.length > 0 ? (
+                          voices.map(v => (
+                            <option key={v.id} value={v.id}>{v.name}</option>
+                          ))
+                        ) : (
+                          <>
+                            <option value="josh">Josh (Male, Deep)</option>
+                            <option value="adam">Adam (Male, Deep)</option>
+                            <option value="antoni">Antoni (Male, Warm)</option>
+                            <option value="arnold">Arnold (Male, Crisp)</option>
+                            <option value="sam">Sam (Male, Raspy)</option>
+                            <option value="rachel">Rachel (Female, Calm)</option>
+                            <option value="domi">Domi (Female, Strong)</option>
+                            <option value="bella">Bella (Female, Soft)</option>
+                          </>
+                        )}
                       </select>
                     </div>
                   ))}
@@ -320,23 +340,9 @@ export default function ProjectPage() {
           <div className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Rehearsal Mode</CardTitle>
-                <CardDescription>Select your role and start rehearsing with AI voices</CardDescription>
+                <CardTitle>Rehearsal Controls</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={useElevenLabs}
-                      onChange={(e) => setUseElevenLabs(e.target.checked)}
-                      className="rounded"
-                    />
-                    <span>Use ElevenLabs AI Voices</span>
-                  </label>
-                  {!useElevenLabs && <span className="text-sm text-muted-foreground">(Using browser TTS)</span>}
-                </div>
-
                 <div>
                   <Label>Your Role (will be silent)</Label>
                   <select
@@ -358,8 +364,8 @@ export default function ProjectPage() {
                       <button
                         key={c.id}
                         onClick={() => toggleMute(c.id)}
-                        className={`px-3 py-1 rounded text-sm ${mutedChars.has(c.id) ? 'bg-gray-300 line-through' : 'bg-gray-100'}`}
-                        style={{ borderLeft: `4px solid ${c.color}` }}
+                        className={`px-3 py-1 rounded text-sm border ${mutedChars.has(c.id) ? 'bg-gray-300 line-through' : 'bg-white'}`}
+                        style={{ borderLeftWidth: 4, borderLeftColor: c.color }}
                       >
                         {c.name}
                       </button>
@@ -367,32 +373,42 @@ export default function ProjectPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-2 items-center">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="ttsEnabled"
+                    checked={ttsEnabled}
+                    onChange={(e) => setTtsEnabled(e.target.checked)}
+                  />
+                  <Label htmlFor="ttsEnabled">Use ElevenLabs voices (uncheck for browser TTS)</Label>
+                </div>
+
+                <div className="flex gap-2 flex-wrap">
+                  <Button onClick={testVoice} variant="outline">🔊 Test Voice</Button>
                   {!isPlaying ? (
-                    <Button onClick={handlePlay} size="lg">▶ Start Rehearsal</Button>
+                    <Button onClick={handlePlay}>▶ Start Rehearsal</Button>
                   ) : (
-                    <Button onClick={handleStop} variant="destructive" size="lg">■ Stop</Button>
+                    <Button onClick={handleStop} variant="destructive">■ Stop</Button>
                   )}
-                  {ttsStatus && <span className="text-sm text-muted-foreground">{ttsStatus}</span>}
                 </div>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Script</CardTitle>
+                <CardTitle>Script ({lines.length} lines)</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-2 max-h-[500px] overflow-auto">
                   {lines.map((line, i) => {
-                    const isCurrent = isPlaying && i === currentLine
+                    const isCurrent = i === currentLine
                     const isMuted = line.character && (mutedChars.has(line.character.id) || line.character.id === myRole)
                     
                     return (
                       <div
                         key={line.id}
-                        className={`p-3 rounded transition-all ${isCurrent ? 'bg-yellow-100 ring-2 ring-yellow-400 scale-[1.01]' : ''} ${isMuted ? 'opacity-40' : ''}`}
-                        style={{ borderLeft: line.character ? `4px solid ${line.character.color}` : '4px solid #ccc' }}
+                        className={`p-3 rounded transition-all ${isCurrent ? 'bg-yellow-100 ring-2 ring-yellow-400 scale-[1.02]' : 'bg-gray-50'} ${isMuted ? 'opacity-40' : ''}`}
+                        style={{ borderLeft: `4px solid ${line.character?.color || '#ccc'}` }}
                       >
                         {line.character && (
                           <span className="font-bold text-sm mr-2" style={{ color: line.character.color }}>
@@ -404,6 +420,7 @@ export default function ProjectPage() {
                         ) : (
                           <span>{line.content}</span>
                         )}
+                        {isMuted && <span className="ml-2 text-xs text-gray-400">(your line)</span>}
                       </div>
                     )
                   })}
