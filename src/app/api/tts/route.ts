@@ -28,7 +28,6 @@ export async function POST(req: Request) {
     }
 
     const voiceId = VOICES[voice] || VOICES['josh']
-    console.log(`Generating TTS for voice: ${voice} (${voiceId})`)
 
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
@@ -39,7 +38,7 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify({
         text,
-        model_id: 'eleven_monolingual_v1',
+        model_id: 'eleven_flash_v2_5',
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.75,
@@ -54,7 +53,6 @@ export async function POST(req: Request) {
     }
 
     const audioBuffer = await response.arrayBuffer()
-    console.log(`Generated audio: ${audioBuffer.byteLength} bytes`)
     
     return new NextResponse(audioBuffer, {
       headers: {
