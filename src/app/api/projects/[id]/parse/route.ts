@@ -62,7 +62,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const characters: Record<string, string> = {}
     let colorIndex = 0
 
-    for (const name of characterNames) {
+    for (const name of Array.from(characterNames)) {
       const char = await prisma.character.create({
         data: {
           projectId: id,
