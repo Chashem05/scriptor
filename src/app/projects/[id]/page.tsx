@@ -36,8 +36,24 @@ export default function ProjectPage() {
   const [ttsReady, setTtsReady] = useState(false)
   const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const lineRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => { loadData(); loadVoices() }, [id])
+
+  // Auto-scroll to current line
+  useEffect(() => {
+    if (currentLine >= 0 && lines[currentLine]) {
+      const lineEl = lineRefs.current[lines[currentLine].id]
+      const container = scrollContainerRef.current
+      if (lineEl && container) {
+        const containerRect = container.getBoundingClientRect()
+        const lineRect = lineEl.getBoundingClientRect()
+        const offset = lineRect.top - containerRect.top - containerRect.height / 3
+        container.scrollBy({ top: offset, behavior: 'smooth' })
+      }
+    }
+  }, [currentLine, lines])
 
   async function loadVoices() {
     try {
@@ -62,7 +78,6 @@ export default function ProjectPage() {
     if (Array.isArray(charData)) {
       setCharacters(charData)
       setVolumes(Object.fromEntries(charData.map((c: Character) => [c.id, 80])))
-      // Initialize voice settings for each character
       const settings: Record<string, { stability: number; similarity: number; style: number; speed: number }> = {}
       charData.forEach((c: Character) => {
         settings[c.id] = {
@@ -167,13 +182,20 @@ export default function ProjectPage() {
       const line = lines[i]
       const charId = line.character?.id
 
-      if (line.type === 'direction' || (charId && (muted.has(charId) || charId === myRole))) {
-        await new Promise(r => setTimeout(r, 500))
+      // Stage directions - brief pause
+      if (line.type === 'direction') {
+        await new Promise(r => setTimeout(r, 800))
         continue
       }
 
       const char = characters.find(c => c.id === charId)
-      await speak(line.content, char?.voice || 'josh', charId || '', volumes[charId || ''] || 80)
+      const isMuted = charId && (muted.has(charId) || charId === myRole)
+      
+      // Always generate and play audio, but set volume to 0 if muted
+      // This preserves timing for rehearsal
+      const effectiveVolume = isMuted ? 0 : (volumes[charId || ''] || 80)
+      
+      await speak(line.content, char?.voice || 'josh', charId || '', effectiveVolume)
       await new Promise(r => setTimeout(r, 200))
     }
 
@@ -277,7 +299,6 @@ export default function ProjectPage() {
                     </button>
                   </div>
                   
-                  {/* Voice Selection */}
                   <div className="mb-4">
                     <label className="text-sm text-gray-600 block mb-1">Voice</label>
                     <select 
@@ -298,7 +319,6 @@ export default function ProjectPage() {
                     </select>
                   </div>
 
-                  {/* Voice Settings Grid */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-sm text-gray-600 flex justify-between">
@@ -339,7 +359,7 @@ export default function ProjectPage() {
                         onChange={e => updateCharSetting(c.id, 'style', +e.target.value / 100)}
                         className="w-full"
                       />
-                      <p className="text-xs text-gray-400">Amplify the speaker's style (uses more compute)</p>
+                      <p className="text-xs text-gray-400">Amplify the speaker's style</p>
                     </div>
                     
                     <div>
@@ -382,37 +402,74 @@ export default function ProjectPage() {
                 <button onClick={play} disabled={!ttsReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
                 <button onClick={stop} className="px-4 py-2 border rounded text-sm">Stop</button>
               </div>
-              <div className="space-y-2 max-h-96 overflow-auto">
-                {lines.map((line, i) => (
-                  <div key={line.id} className={`p-3 rounded ${i === currentLine ? 'bg-blue-900 text-white' : 'bg-gray-50'} ${line.character && (muted.has(line.character.id) || line.character.id === myRole) ? 'opacity-40' : ''}`}>
-                    {line.character && <span className="text-xs px-2 py-0.5 rounded text-white mr-2" style={{ backgroundColor: line.character.color }}>{line.character.name}</span>}
-                    <span className={line.type === 'direction' ? 'italic text-gray-500' : ''}>{line.content}</span>
-                  </div>
-                ))}
+              <div 
+                ref={scrollContainerRef}
+                className="space-y-2 max-h-[500px] overflow-auto scroll-smooth"
+              >
+                {lines.map((line, i) => {
+                  const isMuted = line.character && (muted.has(line.character.id) || line.character.id === myRole)
+                  return (
+                    <div 
+                      key={line.id} 
+                      ref={el => { lineRefs.current[line.id] = el }}
+                      className={`p-3 rounded transition-all duration-300 ${
+                        i === currentLine 
+                          ? 'bg-yellow-100 ring-2 ring-yellow-400 scale-[1.01]' 
+                          : 'bg-gray-50'
+                      } ${isMuted ? 'opacity-50 border-l-4 border-orange-400' : ''}`}
+                    >
+                      {line.character && (
+                        <span className="text-xs px-2 py-0.5 rounded text-white mr-2" style={{ backgroundColor: line.character.color }}>
+                          {line.character.name}
+                        </span>
+                      )}
+                      <span className={line.type === 'direction' ? 'italic text-gray-500' : ''}>
+                        {line.content}
+                      </span>
+                      {isMuted && <span className="ml-2 text-xs text-orange-600">(your cue)</span>}
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
             {/* Mixer */}
             <div className="bg-white rounded-lg p-4 shadow-sm">
-              <h3 className="font-semibold mb-4">Mixer</h3>
-              {characters.map(c => (
-                <div key={c.id} className="mb-4 pb-4 border-b">
-                  <div className="flex justify-between items-center mb-2">
-                    <div>
-                      <span className="font-medium">{c.name}</span>
-                      <span className="text-xs text-gray-400 ml-2">{voices.find(v => v.id === c.voice)?.name || 'Josh'}</span>
+              <h3 className="font-semibold mb-1">Mixer</h3>
+              <p className="text-xs text-gray-500 mb-4">Muted characters still play silently to preserve timing</p>
+              {characters.map(c => {
+                const isMuted = muted.has(c.id) || c.id === myRole
+                return (
+                  <div key={c.id} className="mb-4 pb-4 border-b">
+                    <div className="flex justify-between items-center mb-2">
+                      <div>
+                        <span className="font-medium">{c.name}</span>
+                        <span className="text-xs text-gray-400 ml-2">{voices.find(v => v.id === c.voice)?.name || 'Josh'}</span>
+                      </div>
+                      <button 
+                        onClick={() => setMuted(m => { const n = new Set(m); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} 
+                        className={`px-2 py-1 rounded text-xs ${muted.has(c.id) ? 'bg-orange-500 text-white' : 'bg-gray-100'}`}
+                      >
+                        {muted.has(c.id) ? 'Muted' : 'Mute'}
+                      </button>
                     </div>
-                    <button onClick={() => setMuted(m => { const n = new Set(m); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} className={`px-2 py-1 rounded text-xs ${muted.has(c.id) ? 'bg-red-500 text-white' : 'bg-gray-100'}`}>
-                      {muted.has(c.id) ? 'Muted' : 'Mute'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs">{isMuted ? '🔇' : '🔊'}</span>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        value={isMuted ? 0 : (volumes[c.id] || 80)} 
+                        onChange={e => setVolumes(v => ({ ...v, [c.id]: +e.target.value }))} 
+                        disabled={isMuted}
+                        className="flex-1" 
+                      />
+                      <span className="text-xs w-8">{isMuted ? '0' : (volumes[c.id] || 80)}%</span>
+                    </div>
+                    {c.id === myRole && <p className="text-xs text-orange-600 mt-1">Your role - muted for rehearsal</p>}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs">🔊</span>
-                    <input type="range" min="0" max="100" value={volumes[c.id] || 80} onChange={e => setVolumes(v => ({ ...v, [c.id]: +e.target.value }))} className="flex-1" />
-                    <span className="text-xs w-8">{volumes[c.id] || 80}%</span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
