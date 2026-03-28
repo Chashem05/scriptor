@@ -28,7 +28,10 @@ export default function ProjectPage() {
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [myRole, setMyRole] = useState('')
+  const [hideMyLines, setHideMyLines] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState('')
   const [currentLine, setCurrentLine] = useState(-1)
   const [muted, setMuted] = useState<Set<string>>(new Set())
   const [volumes, setVolumes] = useState<Record<string, number>>({})
@@ -41,7 +44,6 @@ export default function ProjectPage() {
 
   useEffect(() => { loadData(); loadVoices() }, [id])
 
-  // Auto-scroll to current line
   useEffect(() => {
     if (currentLine >= 0 && lines[currentLine]) {
       const lineEl = lineRefs.current[lines[currentLine].id]
@@ -167,7 +169,7 @@ export default function ProjectPage() {
     }
   }
 
-  async function play() {
+  async function playFromLine(startIndex: number) {
     if (!ttsReady || lines.length === 0) {
       setMessage('ElevenLabs not configured. Add ELEVENLABS_API_KEY in Render.')
       return
@@ -176,13 +178,12 @@ export default function ProjectPage() {
     setMessage('')
     playingRef.current = true
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = startIndex; i < lines.length; i++) {
       if (!playingRef.current) break
       setCurrentLine(i)
       const line = lines[i]
       const charId = line.character?.id
 
-      // Stage directions - brief pause
       if (line.type === 'direction') {
         await new Promise(r => setTimeout(r, 800))
         continue
@@ -190,9 +191,6 @@ export default function ProjectPage() {
 
       const char = characters.find(c => c.id === charId)
       const isMuted = charId && (muted.has(charId) || charId === myRole)
-      
-      // Always generate and play audio, but set volume to 0 if muted
-      // This preserves timing for rehearsal
       const effectiveVolume = isMuted ? 0 : (volumes[charId || ''] || 80)
       
       await speak(line.content, char?.voice || 'josh', charId || '', effectiveVolume)
@@ -204,11 +202,88 @@ export default function ProjectPage() {
     playingRef.current = false
   }
 
+  function play() {
+    playFromLine(currentLine >= 0 ? currentLine : 0)
+  }
+
   function stop() {
     playingRef.current = false
     setIsPlaying(false)
-    setCurrentLine(-1)
     audioRef.current?.pause()
+  }
+
+  function stepBackward() {
+    stop()
+    setCurrentLine(prev => Math.max(0, prev - 1))
+  }
+
+  function stepForward() {
+    stop()
+    setCurrentLine(prev => Math.min(lines.length - 1, prev + 1))
+  }
+
+  async function exportMP3() {
+    if (!ttsReady || lines.length === 0) {
+      setMessage('Cannot export - no lines or ElevenLabs not configured')
+      return
+    }
+
+    setIsExporting(true)
+    setExportProgress('Preparing export...')
+
+    const exportLines = lines.map(l => {
+      const charId = l.character?.id
+      const char = characters.find(c => c.id === charId)
+      const isMuted = charId ? (muted.has(charId) || charId === myRole) : false
+      const settings = charSettings[charId || ''] || { stability: 0.5, similarity: 0.75, style: 0, speed: 1 }
+      
+      return {
+        content: l.content,
+        type: l.type,
+        characterId: charId || null,
+        voice: char?.voice || 'josh',
+        isMuted,
+        settings
+      }
+    })
+
+    const spokenLines = exportLines.filter(l => l.type === 'dialogue' && !l.isMuted).length
+    const silentLines = exportLines.filter(l => l.type === 'dialogue' && l.isMuted).length
+    setExportProgress(`Generating ${spokenLines} spoken + ${silentLines} silent lines...`)
+
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lines: exportLines })
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        setMessage(`Export failed: ${err.error}`)
+        setIsExporting(false)
+        return
+      }
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'rehearsal-export.mp3'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      setMessage(`✓ MP3 exported! ${spokenLines} voiced lines, ${silentLines} silent cues for your lines`)
+    } catch (e) {
+      console.error(e)
+      setMessage('Export failed - check console')
+    }
+
+    setIsExporting(false)
+    setExportProgress('')
   }
 
   async function testVoice(charId: string) {
@@ -221,6 +296,12 @@ export default function ProjectPage() {
 
   const dialogueCount = lines.filter(l => l.type === 'dialogue').length
   const directionCount = lines.filter(l => l.type === 'direction').length
+  const mutedCount = lines.filter(l => {
+    if (l.type !== 'dialogue') return false
+    const charId = l.character?.id
+    if (!charId) return false
+    return muted.has(charId) || charId === myRole
+  }).length
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -251,7 +332,7 @@ export default function ProjectPage() {
       {/* Message */}
       {message && (
         <div className="max-w-6xl mx-auto mt-4 px-4">
-          <div className={`p-3 rounded ${message.includes('✗') || message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+          <div className={`p-3 rounded ${message.includes('✗') || message.includes('Error') || message.includes('failed') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
             {message}
           </div>
         </div>
@@ -393,40 +474,99 @@ export default function ProjectPage() {
             <div className="col-span-2 bg-white rounded-lg p-4 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="font-semibold">Rehearsal Player</h3>
-                <select value={myRole} onChange={e => setMyRole(e.target.value)} className="border rounded px-2 py-1 text-sm">
-                  <option value="">My Role: None</option>
-                  {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+                <div className="flex items-center gap-2">
+                  <select value={myRole} onChange={e => setMyRole(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                    <option value="">My Role: None</option>
+                    {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <button
+                    onClick={() => setHideMyLines(!hideMyLines)}
+                    disabled={!myRole}
+                    className={`px-3 py-1 rounded text-sm ${hideMyLines ? 'bg-purple-600 text-white' : 'bg-gray-100'} ${!myRole ? 'opacity-50' : ''}`}
+                  >
+                    {hideMyLines ? '👁️ Show Lines' : '🙈 Hide My Lines'}
+                  </button>
+                </div>
               </div>
-              <div className="flex gap-2 mb-4">
-                <button onClick={play} disabled={!ttsReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
-                <button onClick={stop} className="px-4 py-2 border rounded text-sm">Stop</button>
+              
+              {/* Playback Controls */}
+              <div className="flex gap-2 mb-4 flex-wrap items-center">
+                <button 
+                  onClick={stepBackward} 
+                  disabled={currentLine <= 0}
+                  className="px-3 py-2 border rounded text-sm disabled:opacity-30 hover:bg-gray-50"
+                  title="Step Backward"
+                >
+                  ⏮️ ←
+                </button>
+                <button onClick={play} disabled={!ttsReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">
+                  ▶ Play
+                </button>
+                <button onClick={stop} disabled={!isPlaying} className="px-4 py-2 border rounded text-sm disabled:opacity-30">
+                  ⏹ Stop
+                </button>
+                <button 
+                  onClick={stepForward} 
+                  disabled={currentLine >= lines.length - 1}
+                  className="px-3 py-2 border rounded text-sm disabled:opacity-30 hover:bg-gray-50"
+                  title="Step Forward"
+                >
+                  → ⏭️
+                </button>
+                <span className="text-sm text-gray-500 ml-2">
+                  Line {currentLine >= 0 ? currentLine + 1 : '-'} / {lines.length}
+                </span>
               </div>
+
+              {/* Export Controls */}
+              <div className="flex gap-2 mb-4 flex-wrap items-center">
+                <button 
+                  onClick={exportMP3} 
+                  disabled={!ttsReady || isExporting || lines.length === 0}
+                  className="px-4 py-2 bg-blue-600 text-white rounded text-sm disabled:opacity-50"
+                >
+                  {isExporting ? '⏳ Exporting...' : '💾 Export MP3'}
+                </button>
+                {exportProgress && <span className="text-sm text-gray-500">{exportProgress}</span>}
+              </div>
+              
+              <p className="text-xs text-gray-500 mb-2">
+                Export: {dialogueCount - mutedCount} voiced + {mutedCount} silent pauses
+              </p>
+              
               <div 
                 ref={scrollContainerRef}
                 className="space-y-2 max-h-[500px] overflow-auto scroll-smooth"
               >
                 {lines.map((line, i) => {
-                  const isMuted = line.character && (muted.has(line.character.id) || line.character.id === myRole)
+                  const isMyLine = line.character?.id === myRole
+                  const isMuted = line.character && (muted.has(line.character.id) || isMyLine)
+                  const shouldHideText = isMyLine && hideMyLines && line.type === 'dialogue'
+                  
                   return (
                     <div 
                       key={line.id} 
                       ref={el => { lineRefs.current[line.id] = el }}
-                      className={`p-3 rounded transition-all duration-300 ${
+                      onClick={() => { stop(); setCurrentLine(i) }}
+                      className={`p-3 rounded transition-all duration-300 cursor-pointer hover:ring-1 hover:ring-gray-300 ${
                         i === currentLine 
                           ? 'bg-yellow-100 ring-2 ring-yellow-400 scale-[1.01]' 
                           : 'bg-gray-50'
-                      } ${isMuted ? 'opacity-50 border-l-4 border-orange-400' : ''}`}
+                      } ${isMuted ? 'border-l-4 border-orange-400' : ''} ${isMyLine ? 'bg-orange-50' : ''}`}
                     >
                       {line.character && (
                         <span className="text-xs px-2 py-0.5 rounded text-white mr-2" style={{ backgroundColor: line.character.color }}>
                           {line.character.name}
                         </span>
                       )}
-                      <span className={line.type === 'direction' ? 'italic text-gray-500' : ''}>
-                        {line.content}
-                      </span>
-                      {isMuted && <span className="ml-2 text-xs text-orange-600">(your cue)</span>}
+                      {shouldHideText ? (
+                        <span className="text-gray-400 italic">[ Your line - hidden ]</span>
+                      ) : (
+                        <span className={line.type === 'direction' ? 'italic text-gray-500' : ''}>
+                          {line.content}
+                        </span>
+                      )}
+                      {isMyLine && !shouldHideText && <span className="ml-2 text-xs text-orange-600">(your cue)</span>}
                     </div>
                   )
                 })}
@@ -436,7 +576,7 @@ export default function ProjectPage() {
             {/* Mixer */}
             <div className="bg-white rounded-lg p-4 shadow-sm">
               <h3 className="font-semibold mb-1">Mixer</h3>
-              <p className="text-xs text-gray-500 mb-4">Muted characters still play silently to preserve timing</p>
+              <p className="text-xs text-gray-500 mb-4">Muted = silent pause (keeps timing)</p>
               {characters.map(c => {
                 const isMuted = muted.has(c.id) || c.id === myRole
                 return (
@@ -466,7 +606,7 @@ export default function ProjectPage() {
                       />
                       <span className="text-xs w-8">{isMuted ? '0' : (volumes[c.id] || 80)}%</span>
                     </div>
-                    {c.id === myRole && <p className="text-xs text-orange-600 mt-1">Your role - muted for rehearsal</p>}
+                    {c.id === myRole && <p className="text-xs text-orange-600 mt-1">Your role</p>}
                   </div>
                 )
               })}
