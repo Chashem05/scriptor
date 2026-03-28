@@ -23,8 +23,6 @@ type Line = {
   character: Character | null
 }
 
-type Voice = { id: string; name: string }
-
 export default function ProjectPage() {
   const params = useParams()
   const id = params.id as string
@@ -34,14 +32,13 @@ export default function ProjectPage() {
   const [savedScript, setSavedScript] = useState<string | null>(null)
   const [characters, setCharacters] = useState<Character[]>([])
   const [lines, setLines] = useState<Line[]>([])
-  const [voices, setVoices] = useState<Voice[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [myRole, setMyRole] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentLine, setCurrentLine] = useState(-1)
   const [mutedChars, setMutedChars] = useState<Set<string>>(new Set())
-  const [elevenLabsReady, setElevenLabsReady] = useState(false)
+  const [ttsReady, setTtsReady] = useState(false)
   const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -54,10 +51,9 @@ export default function ProjectPage() {
     try {
       const res = await fetch('/api/tts')
       const data = await res.json()
-      setElevenLabsReady(data.configured)
-      if (data.voices) setVoices(data.voices)
+      setTtsReady(data.configured)
     } catch (e) {
-      setElevenLabsReady(false)
+      setTtsReady(false)
     }
   }
 
@@ -125,7 +121,7 @@ export default function ProjectPage() {
     })
   }
 
-  async function speakWithElevenLabs(text: string, voice: string): Promise<boolean> {
+  async function speakWithGoogle(text: string, voice: string): Promise<boolean> {
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -136,7 +132,6 @@ export default function ProjectPage() {
       if (!res.ok) {
         const err = await res.json()
         console.error('TTS Error:', err)
-        setMessage(`ElevenLabs error: ${err.error}`)
         return false
       }
 
@@ -150,18 +145,14 @@ export default function ProjectPage() {
           URL.revokeObjectURL(audioUrl)
           resolve(true)
         }
-        audio.onerror = (e) => {
-          console.error('Audio playback error:', e)
+        audio.onerror = () => {
           URL.revokeObjectURL(audioUrl)
           resolve(false)
         }
-        audio.play().catch(e => {
-          console.error('Play error:', e)
-          resolve(false)
-        })
+        audio.play().catch(() => resolve(false))
       })
     } catch (error) {
-      console.error('ElevenLabs error:', error)
+      console.error('TTS error:', error)
       return false
     }
   }
@@ -207,12 +198,11 @@ export default function ProjectPage() {
       }
       
       const char = characters.find(c => c.id === charId)
-      const voice = char?.voice || 'josh'
+      const voice = char?.voice || 'male-1'
       
-      if (elevenLabsReady) {
-        const success = await speakWithElevenLabs(line.content, voice)
+      if (ttsReady) {
+        const success = await speakWithGoogle(line.content, voice)
         if (!success) {
-          setMessage('ElevenLabs failed, falling back to browser voice')
           await speakWithBrowser(line.content)
         }
       } else {
@@ -239,12 +229,12 @@ export default function ProjectPage() {
   }
 
   async function testVoice() {
-    setMessage('Testing ElevenLabs...')
-    const success = await speakWithElevenLabs("Hello! This is a test of the ElevenLabs voice system.", 'josh')
+    setMessage('Testing Google Cloud TTS...')
+    const success = await speakWithGoogle("Hello! This is a test of Google Cloud text to speech.", 'male-1')
     if (success) {
-      setMessage('✓ ElevenLabs working!')
+      setMessage('✓ Google Cloud TTS working!')
     } else {
-      setMessage('✗ ElevenLabs not working - check API key in Render environment variables')
+      setMessage('✗ Google Cloud TTS not working - check API key')
     }
   }
 
@@ -305,8 +295,8 @@ export default function ProjectPage() {
             <CardHeader>
               <CardTitle>Characters & Voices</CardTitle>
               <CardDescription>
-                Assign ElevenLabs voices to each character
-                {!elevenLabsReady && <span className="text-red-500 ml-2">(API key not configured!)</span>}
+                Assign Google Cloud voices to each character
+                {!ttsReady && <span className="text-red-500 ml-2">(API key not configured!)</span>}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -326,14 +316,13 @@ export default function ProjectPage() {
                         onChange={(e) => handleVoiceChange(char.id, e.target.value)}
                         className="border rounded p-2"
                       >
-                        <option value="josh">Josh (Male, Deep)</option>
-                        <option value="adam">Adam (Male, Deep)</option>
-                        <option value="antoni">Antoni (Male, Warm)</option>
-                        <option value="arnold">Arnold (Male, Crisp)</option>
-                        <option value="sam">Sam (Male, Raspy)</option>
-                        <option value="rachel">Rachel (Female, Calm)</option>
-                        <option value="domi">Domi (Female, Strong)</option>
-                        <option value="bella">Bella (Female, Soft)</option>
+                        <option value="male-1">Male 1 (Casual)</option>
+                        <option value="male-2">Male 2 (Neural)</option>
+                        <option value="male-3">Male 3 (Neural)</option>
+                        <option value="female-1">Female 1 (Neural)</option>
+                        <option value="female-2">Female 2 (Neural)</option>
+                        <option value="female-3">Female 3 (Neural)</option>
+                        <option value="neutral">Neutral</option>
                       </select>
                     </div>
                   ))}
@@ -349,9 +338,9 @@ export default function ProjectPage() {
               <CardHeader>
                 <CardTitle>Rehearsal Controls</CardTitle>
                 <CardDescription>
-                  {elevenLabsReady 
-                    ? '✓ ElevenLabs connected' 
-                    : '⚠️ ElevenLabs not configured - using browser voices'}
+                  {ttsReady 
+                    ? '✓ Google Cloud TTS connected' 
+                    : '⚠️ Google TTS not configured - using browser voices'}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -386,7 +375,7 @@ export default function ProjectPage() {
                 </div>
 
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={testVoice} variant="outline">🔊 Test ElevenLabs</Button>
+                  <Button onClick={testVoice} variant="outline">🔊 Test Voice</Button>
                   {!isPlaying ? (
                     <Button onClick={handlePlay}>▶ Start Rehearsal</Button>
                   ) : (
