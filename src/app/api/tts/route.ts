@@ -4,20 +4,21 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY
 
 // ElevenLabs voice IDs
 const VOICES: Record<string, string> = {
-  'rachel': '21m00Tcm4TlvDq8ikWAM',      // Female, calm
-  'domi': 'AZnzlk1XvdvUeBnXmlld',        // Female, strong  
-  'bella': 'EXAVITQu4vr4xnSDxMaL',       // Female, soft
-  'antoni': 'ErXwobaYiN019PkySvjV',      // Male, warm
-  'josh': 'TxGEqnHWrfWFTfGW9XjX',        // Male, deep
-  'arnold': 'VR6AewLTigWG4xSOukaG',      // Male, crisp
-  'adam': 'pNInz6obpgDQGcFmaJgB',        // Male, deep
-  'sam': 'yoZ06aMxZJJ28mfd3POQ',         // Male, raspy
+  'rachel': '21m00Tcm4TlvDq8ikWAM',
+  'domi': 'AZnzlk1XvdvUeBnXmlld',
+  'bella': 'EXAVITQu4vr4xnSDxMaL',
+  'antoni': 'ErXwobaYiN019PkySvjV',
+  'josh': 'TxGEqnHWrfWFTfGW9XjX',
+  'arnold': 'VR6AewLTigWG4xSOukaG',
+  'adam': 'pNInz6obpgDQGcFmaJgB',
+  'sam': 'yoZ06aMxZJJ28mfd3POQ',
 }
 
 export async function POST(req: Request) {
   try {
     if (!ELEVENLABS_API_KEY) {
-      return NextResponse.json({ error: 'ElevenLabs API key not configured' }, { status: 500 })
+      console.log('No ElevenLabs API key found')
+      return NextResponse.json({ error: 'NO_API_KEY' }, { status: 500 })
     }
 
     const { text, voice = 'josh' } = await req.json()
@@ -27,6 +28,7 @@ export async function POST(req: Request) {
     }
 
     const voiceId = VOICES[voice] || VOICES['josh']
+    console.log(`Generating TTS for voice: ${voice} (${voiceId})`)
 
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
@@ -46,12 +48,13 @@ export async function POST(req: Request) {
     })
 
     if (!response.ok) {
-      const error = await response.text()
-      console.error('ElevenLabs error:', error)
-      return NextResponse.json({ error: 'TTS generation failed' }, { status: 500 })
+      const errorText = await response.text()
+      console.error('ElevenLabs API error:', response.status, errorText)
+      return NextResponse.json({ error: 'ELEVENLABS_ERROR', details: errorText }, { status: 500 })
     }
 
     const audioBuffer = await response.arrayBuffer()
+    console.log(`Generated audio: ${audioBuffer.byteLength} bytes`)
     
     return new NextResponse(audioBuffer, {
       headers: {
@@ -60,13 +63,14 @@ export async function POST(req: Request) {
     })
   } catch (error) {
     console.error('TTS error:', error)
-    return NextResponse.json({ error: 'TTS generation failed' }, { status: 500 })
+    return NextResponse.json({ error: 'TTS_ERROR', message: String(error) }, { status: 500 })
   }
 }
 
 export async function GET() {
-  // Return available voices
+  const hasKey = !!ELEVENLABS_API_KEY
   return NextResponse.json({
+    configured: hasKey,
     voices: Object.keys(VOICES).map(id => ({
       id,
       name: id.charAt(0).toUpperCase() + id.slice(1)

@@ -41,19 +41,24 @@ export default function ProjectPage() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentLine, setCurrentLine] = useState(-1)
   const [mutedChars, setMutedChars] = useState<Set<string>>(new Set())
-  const [ttsEnabled, setTtsEnabled] = useState(true)
+  const [elevenLabsReady, setElevenLabsReady] = useState(false)
   const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
     loadData()
-    loadVoices()
+    checkTTS()
   }, [id])
 
-  async function loadVoices() {
-    const res = await fetch('/api/tts')
-    const data = await res.json()
-    if (data.voices) setVoices(data.voices)
+  async function checkTTS() {
+    try {
+      const res = await fetch('/api/tts')
+      const data = await res.json()
+      setElevenLabsReady(data.configured)
+      if (data.voices) setVoices(data.voices)
+    } catch (e) {
+      setElevenLabsReady(false)
+    }
   }
 
   async function loadData() {
@@ -120,7 +125,7 @@ export default function ProjectPage() {
     })
   }
 
-  async function speakWithElevenLabs(text: string, voice: string): Promise<void> {
+  async function speakWithElevenLabs(text: string, voice: string): Promise<boolean> {
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
@@ -129,8 +134,10 @@ export default function ProjectPage() {
       })
 
       if (!res.ok) {
-        // Fallback to browser TTS
-        return speakWithBrowser(text)
+        const err = await res.json()
+        console.error('TTS Error:', err)
+        setMessage(`ElevenLabs error: ${err.error}`)
+        return false
       }
 
       const audioBlob = await res.blob()
@@ -141,17 +148,21 @@ export default function ProjectPage() {
         audioRef.current = audio
         audio.onended = () => {
           URL.revokeObjectURL(audioUrl)
-          resolve()
+          resolve(true)
         }
-        audio.onerror = () => {
+        audio.onerror = (e) => {
+          console.error('Audio playback error:', e)
           URL.revokeObjectURL(audioUrl)
-          resolve()
+          resolve(false)
         }
-        audio.play()
+        audio.play().catch(e => {
+          console.error('Play error:', e)
+          resolve(false)
+        })
       })
     } catch (error) {
       console.error('ElevenLabs error:', error)
-      return speakWithBrowser(text)
+      return false
     }
   }
 
@@ -175,6 +186,7 @@ export default function ProjectPage() {
     }
     
     setIsPlaying(true)
+    setMessage('')
     playingRef.current = true
     
     for (let i = 0; i < lines.length; i++) {
@@ -184,25 +196,25 @@ export default function ProjectPage() {
       const line = lines[i]
       const charId = line.character?.id
       
-      // Skip if muted or it's my role
       if (charId && (mutedChars.has(charId) || charId === myRole)) {
         await new Promise(r => setTimeout(r, 1000))
         continue
       }
       
-      // Skip stage directions
       if (line.type === 'direction') {
         await new Promise(r => setTimeout(r, 500))
         continue
       }
       
-      // Get character's voice
       const char = characters.find(c => c.id === charId)
       const voice = char?.voice || 'josh'
       
-      // Speak the line
-      if (ttsEnabled) {
-        await speakWithElevenLabs(line.content, voice)
+      if (elevenLabsReady) {
+        const success = await speakWithElevenLabs(line.content, voice)
+        if (!success) {
+          setMessage('ElevenLabs failed, falling back to browser voice')
+          await speakWithBrowser(line.content)
+        }
       } else {
         await speakWithBrowser(line.content)
       }
@@ -227,12 +239,12 @@ export default function ProjectPage() {
   }
 
   async function testVoice() {
-    setMessage('Testing ElevenLabs voice...')
-    try {
-      await speakWithElevenLabs("Hello! This is a test of the ElevenLabs voice.", 'josh')
-      setMessage('Voice test complete!')
-    } catch (e) {
-      setMessage('Voice test failed - using browser fallback')
+    setMessage('Testing ElevenLabs...')
+    const success = await speakWithElevenLabs("Hello! This is a test of the ElevenLabs voice system.", 'josh')
+    if (success) {
+      setMessage('✓ ElevenLabs working!')
+    } else {
+      setMessage('✗ ElevenLabs not working - check API key in Render environment variables')
     }
   }
 
@@ -256,7 +268,7 @@ export default function ProjectPage() {
         </div>
 
         {message && (
-          <div className={`mb-4 p-3 rounded ${message.includes('fail') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+          <div className={`mb-4 p-3 rounded ${message.includes('✗') || message.includes('fail') || message.includes('error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
             {message}
           </div>
         )}
@@ -292,7 +304,10 @@ export default function ProjectPage() {
           <Card>
             <CardHeader>
               <CardTitle>Characters & Voices</CardTitle>
-              <CardDescription>Assign ElevenLabs voices to each character</CardDescription>
+              <CardDescription>
+                Assign ElevenLabs voices to each character
+                {!elevenLabsReady && <span className="text-red-500 ml-2">(API key not configured!)</span>}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {characters.length === 0 ? (
@@ -311,22 +326,14 @@ export default function ProjectPage() {
                         onChange={(e) => handleVoiceChange(char.id, e.target.value)}
                         className="border rounded p-2"
                       >
-                        {voices.length > 0 ? (
-                          voices.map(v => (
-                            <option key={v.id} value={v.id}>{v.name}</option>
-                          ))
-                        ) : (
-                          <>
-                            <option value="josh">Josh (Male, Deep)</option>
-                            <option value="adam">Adam (Male, Deep)</option>
-                            <option value="antoni">Antoni (Male, Warm)</option>
-                            <option value="arnold">Arnold (Male, Crisp)</option>
-                            <option value="sam">Sam (Male, Raspy)</option>
-                            <option value="rachel">Rachel (Female, Calm)</option>
-                            <option value="domi">Domi (Female, Strong)</option>
-                            <option value="bella">Bella (Female, Soft)</option>
-                          </>
-                        )}
+                        <option value="josh">Josh (Male, Deep)</option>
+                        <option value="adam">Adam (Male, Deep)</option>
+                        <option value="antoni">Antoni (Male, Warm)</option>
+                        <option value="arnold">Arnold (Male, Crisp)</option>
+                        <option value="sam">Sam (Male, Raspy)</option>
+                        <option value="rachel">Rachel (Female, Calm)</option>
+                        <option value="domi">Domi (Female, Strong)</option>
+                        <option value="bella">Bella (Female, Soft)</option>
                       </select>
                     </div>
                   ))}
@@ -341,6 +348,11 @@ export default function ProjectPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Rehearsal Controls</CardTitle>
+                <CardDescription>
+                  {elevenLabsReady 
+                    ? '✓ ElevenLabs connected' 
+                    : '⚠️ ElevenLabs not configured - using browser voices'}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
@@ -373,18 +385,8 @@ export default function ProjectPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="ttsEnabled"
-                    checked={ttsEnabled}
-                    onChange={(e) => setTtsEnabled(e.target.checked)}
-                  />
-                  <Label htmlFor="ttsEnabled">Use ElevenLabs voices (uncheck for browser TTS)</Label>
-                </div>
-
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={testVoice} variant="outline">🔊 Test Voice</Button>
+                  <Button onClick={testVoice} variant="outline">🔊 Test ElevenLabs</Button>
                   {!isPlaying ? (
                     <Button onClick={handlePlay}>▶ Start Rehearsal</Button>
                   ) : (
