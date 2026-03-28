@@ -3,9 +3,20 @@
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
+import Script from 'next/script'
 import { Button } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { Label } from '../../../components/ui/label'
+
+declare global {
+  interface Window {
+    puter: {
+      ai: {
+        txt2speech: (text: string, options?: { voice?: string; engine?: string }) => Promise<HTMLAudioElement>
+      }
+    }
+  }
+}
 
 type Character = {
   id: string
@@ -23,6 +34,19 @@ type Line = {
   character: Character | null
 }
 
+// Puter.js voices (Amazon Polly voices)
+const VOICES = [
+  { id: 'Matthew', name: 'Matthew (Male, US)' },
+  { id: 'Joanna', name: 'Joanna (Female, US)' },
+  { id: 'Joey', name: 'Joey (Male, US)' },
+  { id: 'Salli', name: 'Salli (Female, US)' },
+  { id: 'Ivy', name: 'Ivy (Female, Child)' },
+  { id: 'Justin', name: 'Justin (Male, Child)' },
+  { id: 'Brian', name: 'Brian (Male, UK)' },
+  { id: 'Amy', name: 'Amy (Female, UK)' },
+  { id: 'Emma', name: 'Emma (Female, UK)' },
+]
+
 export default function ProjectPage() {
   const params = useParams()
   const id = params.id as string
@@ -38,24 +62,13 @@ export default function ProjectPage() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentLine, setCurrentLine] = useState(-1)
   const [mutedChars, setMutedChars] = useState<Set<string>>(new Set())
-  const [ttsReady, setTtsReady] = useState(false)
+  const [puterReady, setPuterReady] = useState(false)
   const playingRef = useRef(false)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
     loadData()
-    checkTTS()
   }, [id])
-
-  async function checkTTS() {
-    try {
-      const res = await fetch('/api/tts')
-      const data = await res.json()
-      setTtsReady(data.configured)
-    } catch (e) {
-      setTtsReady(false)
-    }
-  }
 
   async function loadData() {
     const scriptRes = await fetch(`/api/projects/${id}/script`)
@@ -121,59 +134,41 @@ export default function ProjectPage() {
     })
   }
 
-  async function speakWithGoogle(text: string, voice: string): Promise<boolean> {
+  async function speakWithPuter(text: string, voice: string): Promise<boolean> {
+    if (!window.puter) {
+      console.error('Puter not loaded')
+      return false
+    }
+    
     try {
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice })
+      const audio = await window.puter.ai.txt2speech(text, {
+        voice: voice,
+        engine: 'neural'
       })
-
-      if (!res.ok) {
-        const err = await res.json()
-        console.error('TTS Error:', err)
-        return false
-      }
-
-      const audioBlob = await res.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
+      
+      currentAudioRef.current = audio
       
       return new Promise((resolve) => {
-        const audio = new Audio(audioUrl)
-        audioRef.current = audio
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl)
-          resolve(true)
-        }
-        audio.onerror = () => {
-          URL.revokeObjectURL(audioUrl)
-          resolve(false)
-        }
+        audio.onended = () => resolve(true)
+        audio.onerror = () => resolve(false)
         audio.play().catch(() => resolve(false))
       })
     } catch (error) {
-      console.error('TTS error:', error)
+      console.error('Puter TTS error:', error)
       return false
     }
   }
 
-  function speakWithBrowser(text: string): Promise<void> {
-    return new Promise((resolve) => {
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.rate = 0.9
-      utterance.onend = () => resolve()
-      utterance.onerror = () => resolve()
-      speechSynthesis.speak(utterance)
-    })
-  }
-
   async function handlePlay() {
     if (lines.length === 0) return
+    if (!puterReady) {
+      setMessage('Voice engine loading, please wait...')
+      return
+    }
     
-    speechSynthesis.cancel()
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current = null
     }
     
     setIsPlaying(true)
@@ -198,17 +193,9 @@ export default function ProjectPage() {
       }
       
       const char = characters.find(c => c.id === charId)
-      const voice = char?.voice || 'male-1'
+      const voice = char?.voice || 'Matthew'
       
-      if (ttsReady) {
-        const success = await speakWithGoogle(line.content, voice)
-        if (!success) {
-          await speakWithBrowser(line.content)
-        }
-      } else {
-        await speakWithBrowser(line.content)
-      }
-      
+      await speakWithPuter(line.content, voice)
       await new Promise(r => setTimeout(r, 300))
     }
     
@@ -221,25 +208,33 @@ export default function ProjectPage() {
     playingRef.current = false
     setIsPlaying(false)
     setCurrentLine(-1)
-    speechSynthesis.cancel()
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause()
+      currentAudioRef.current = null
     }
   }
 
   async function testVoice() {
-    setMessage('Testing Google Cloud TTS...')
-    const success = await speakWithGoogle("Hello! This is a test of Google Cloud text to speech.", 'male-1')
+    if (!puterReady) {
+      setMessage('Voice engine loading...')
+      return
+    }
+    setMessage('Testing voice...')
+    const success = await speakWithPuter("Hello! This is a test of the AI voice system. It sounds great, right?", 'Matthew')
     if (success) {
-      setMessage('✓ Google Cloud TTS working!')
+      setMessage('✓ Voice test complete!')
     } else {
-      setMessage('✗ Google Cloud TTS not working - check API key')
+      setMessage('✗ Voice test failed')
     }
   }
 
   return (
     <div className="min-h-screen p-4 md:p-8">
+      <Script 
+        src="https://js.puter.com/v2/" 
+        onLoad={() => setPuterReady(true)}
+      />
+      
       <div className="max-w-5xl mx-auto">
         <Link href="/dashboard" className="text-sm text-muted-foreground hover:underline mb-4 block">
           ← Back to Dashboard
@@ -294,10 +289,7 @@ export default function ProjectPage() {
           <Card>
             <CardHeader>
               <CardTitle>Characters & Voices</CardTitle>
-              <CardDescription>
-                Assign Google Cloud voices to each character
-                {!ttsReady && <span className="text-red-500 ml-2">(API key not configured!)</span>}
-              </CardDescription>
+              <CardDescription>Assign AI voices to each character (Free, powered by Puter.js)</CardDescription>
             </CardHeader>
             <CardContent>
               {characters.length === 0 ? (
@@ -312,17 +304,13 @@ export default function ProjectPage() {
                         <div className="text-sm text-muted-foreground">{char._count?.lines || 0} lines</div>
                       </div>
                       <select
-                        value={char.voice}
+                        value={char.voice || 'Matthew'}
                         onChange={(e) => handleVoiceChange(char.id, e.target.value)}
                         className="border rounded p-2"
                       >
-                        <option value="male-1">Male 1 (Casual)</option>
-                        <option value="male-2">Male 2 (Neural)</option>
-                        <option value="male-3">Male 3 (Neural)</option>
-                        <option value="female-1">Female 1 (Neural)</option>
-                        <option value="female-2">Female 2 (Neural)</option>
-                        <option value="female-3">Female 3 (Neural)</option>
-                        <option value="neutral">Neutral</option>
+                        {VOICES.map(v => (
+                          <option key={v.id} value={v.id}>{v.name}</option>
+                        ))}
                       </select>
                     </div>
                   ))}
@@ -338,9 +326,9 @@ export default function ProjectPage() {
               <CardHeader>
                 <CardTitle>Rehearsal Controls</CardTitle>
                 <CardDescription>
-                  {ttsReady 
-                    ? '✓ Google Cloud TTS connected' 
-                    : '⚠️ Google TTS not configured - using browser voices'}
+                  {puterReady 
+                    ? '✓ AI voices ready (Free, unlimited)' 
+                    : '⏳ Loading voice engine...'}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -375,11 +363,17 @@ export default function ProjectPage() {
                 </div>
 
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={testVoice} variant="outline">🔊 Test Voice</Button>
+                  <Button onClick={testVoice} variant="outline" disabled={!puterReady}>
+                    🔊 Test Voice
+                  </Button>
                   {!isPlaying ? (
-                    <Button onClick={handlePlay}>▶ Start Rehearsal</Button>
+                    <Button onClick={handlePlay} disabled={!puterReady}>
+                      ▶ Start Rehearsal
+                    </Button>
                   ) : (
-                    <Button onClick={handleStop} variant="destructive">■ Stop</Button>
+                    <Button onClick={handleStop} variant="destructive">
+                      ■ Stop
+                    </Button>
                   )}
                 </div>
               </CardContent>
