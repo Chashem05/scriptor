@@ -15,660 +15,243 @@ declare global {
   }
 }
 
-type Character = {
-  id: string
-  name: string
-  voice: string
-  color: string
-  voiceStyle?: string
-  volume?: number
-  _count?: { lines: number }
-}
+type Character = { id: string; name: string; voice: string; color: string; _count?: { lines: number } }
+type Line = { id: string; lineNumber: number; type: string; content: string; character: Character | null }
 
-type Line = {
-  id: string
-  lineNumber: number
-  type: string
-  content: string
-  scene?: number
-  character: Character | null
-}
-
-type Scene = {
-  number: number
-  lines: Line[]
-}
-
-// Valid Amazon Polly voices for Puter.js (FREE)
 const VOICES = [
   { id: 'Matthew', name: 'Matthew', style: 'Warm Narrator' },
-  { id: 'Joanna', name: 'Joanna', style: 'Friendly Female' },
-  { id: 'Joey', name: 'Joey', style: 'Casual Male' },
-  { id: 'Salli', name: 'Salli', style: 'Professional Female' },
-  { id: 'Kendra', name: 'Kendra', style: 'Confident Female' },
-  { id: 'Kimberly', name: 'Kimberly', style: 'Energetic Female' },
-  { id: 'Kevin', name: 'Kevin', style: 'Young Male' },
-  { id: 'Ivy', name: 'Ivy', style: 'Young Female' },
-  { id: 'Brian', name: 'Brian', style: 'British Male' },
+  { id: 'Joanna', name: 'Joanna', style: 'Friendly' },
+  { id: 'Joey', name: 'Joey', style: 'Casual' },
+  { id: 'Salli', name: 'Salli', style: 'Professional' },
+  { id: 'Brian', name: 'Brian', style: 'British' },
   { id: 'Amy', name: 'Amy', style: 'British Female' },
-  { id: 'Emma', name: 'Emma', style: 'British Warm' },
-  { id: 'Arthur', name: 'Arthur', style: 'British Authoritative' },
-  { id: 'Stephen', name: 'Stephen', style: 'Sharp Leading Man' },
-  { id: 'Ruth', name: 'Ruth', style: 'Mature Female' },
+  { id: 'Stephen', name: 'Stephen', style: 'Sharp' },
   { id: 'Gregory', name: 'Gregory', style: 'Dry Comic' },
 ]
 
-const DEFAULT_VOICE = 'Matthew'
-
 export default function ProjectPage() {
-  const params = useParams()
-  const id = params.id as string
-  
+  const { id } = useParams() as { id: string }
   const [tab, setTab] = useState<'upload' | 'parse' | 'voices' | 'mixer'>('upload')
   const [script, setScript] = useState('')
-  const [savedScript, setSavedScript] = useState<string | null>(null)
   const [characters, setCharacters] = useState<Character[]>([])
   const [lines, setLines] = useState<Line[]>([])
-  const [scenes, setScenes] = useState<Scene[]>([])
-  const [selectedScene, setSelectedScene] = useState(1)
   const [loading, setLoading] = useState(false)
-  const [message, setMessage] = useState('')
-  const [myRole, setMyRole] = useState<string>('')
-  const [mode, setMode] = useState<'full' | 'solo'>('full')
+  const [myRole, setMyRole] = useState('')
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentLineIndex, setCurrentLineIndex] = useState(-1)
-  const [mutedChars, setMutedChars] = useState<Set<string>>(new Set())
-  const [soloChars, setSoloChars] = useState<Set<string>>(new Set())
+  const [currentLine, setCurrentLine] = useState(-1)
+  const [muted, setMuted] = useState<Set<string>>(new Set())
   const [volumes, setVolumes] = useState<Record<string, number>>({})
   const [puterReady, setPuterReady] = useState(false)
-  const [projectTitle, setProjectTitle] = useState('My Rehearsal Project')
   const playingRef = useRef(false)
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  useEffect(() => {
-    loadData()
-  }, [id])
-
-  useEffect(() => {
-    // Group lines into scenes
-    const sceneMap: Record<number, Line[]> = {}
-    lines.forEach(line => {
-      const sceneNum = line.scene || 1
-      if (!sceneMap[sceneNum]) sceneMap[sceneNum] = []
-      sceneMap[sceneNum].push(line)
-    })
-    const scenesArr = Object.entries(sceneMap).map(([num, lines]) => ({
-      number: parseInt(num),
-      lines
-    })).sort((a, b) => a.number - b.number)
-    setScenes(scenesArr)
-  }, [lines])
+  useEffect(() => { loadData() }, [id])
 
   async function loadData() {
-    const scriptRes = await fetch(`/api/projects/${id}/script`)
+    const [scriptRes, charRes, linesRes] = await Promise.all([
+      fetch(`/api/projects/${id}/script`),
+      fetch(`/api/projects/${id}/characters`),
+      fetch(`/api/projects/${id}/lines`)
+    ])
     const scriptData = await scriptRes.json()
-    if (scriptData?.content) {
-      setSavedScript(scriptData.content)
-      setScript(scriptData.content)
-    }
-
-    const charRes = await fetch(`/api/projects/${id}/characters`)
     const charData = await charRes.json()
+    const linesData = await linesRes.json()
+    
+    if (scriptData?.content) setScript(scriptData.content)
     if (Array.isArray(charData)) {
       setCharacters(charData)
-      const vols: Record<string, number> = {}
-      charData.forEach((c: Character) => vols[c.id] = c.volume || 80)
-      setVolumes(vols)
+      setVolumes(Object.fromEntries(charData.map((c: Character) => [c.id, 80])))
     }
-
-    const linesRes = await fetch(`/api/projects/${id}/lines`)
-    const linesData = await linesRes.json()
     if (Array.isArray(linesData)) setLines(linesData)
   }
 
-  async function handleSaveScript() {
+  async function saveScript() {
     setLoading(true)
-    const res = await fetch(`/api/projects/${id}/script`, {
+    await fetch(`/api/projects/${id}/script`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: script })
     })
-    if (res.ok) {
-      setSavedScript(script)
-      setMessage('Script saved!')
-      setTab('parse')
-    }
     setLoading(false)
+    setTab('parse')
   }
 
-  async function handleParse() {
+  async function parseScript() {
     setLoading(true)
-    const res = await fetch(`/api/projects/${id}/parse`, { method: 'POST' })
-    const data = await res.json()
-    if (res.ok) {
-      setMessage(`Parsed! Found ${data.characters} characters and ${data.lines} lines.`)
-      loadData()
-      setTab('voices')
-    }
+    await fetch(`/api/projects/${id}/parse`, { method: 'POST' })
+    await loadData()
     setLoading(false)
+    setTab('voices')
   }
 
-  async function handleVoiceChange(charId: string, voice: string) {
+  async function setVoice(charId: string, voice: string) {
     await fetch(`/api/projects/${id}/characters`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ characterId: charId, voice })
     })
-    setCharacters(chars => chars.map(c => c.id === charId ? { ...c, voice } : c))
+    setCharacters(c => c.map(x => x.id === charId ? { ...x, voice } : x))
   }
 
-  function getValidVoice(voice: string | undefined): string {
-    if (!voice) return DEFAULT_VOICE
-    const validVoice = VOICES.find(v => v.id === voice)
-    return validVoice ? voice : DEFAULT_VOICE
+  function getVoice(v?: string) {
+    return VOICES.find(x => x.id === v)?.id || 'Matthew'
   }
 
-  function getVoiceStyle(voice: string): string {
-    const v = VOICES.find(x => x.id === voice)
-    return v?.style || 'Default'
-  }
-
-  function toggleMute(charId: string) {
-    setMutedChars(prev => {
-      const next = new Set(prev)
-      if (next.has(charId)) next.delete(charId)
-      else next.add(charId)
-      return next
-    })
-  }
-
-  function toggleSolo(charId: string) {
-    setSoloChars(prev => {
-      const next = new Set(prev)
-      if (next.has(charId)) next.delete(charId)
-      else next.add(charId)
-      return next
-    })
-  }
-
-  async function speakWithPuter(text: string, voice: string, volume: number = 80): Promise<boolean> {
-    if (!window.puter) return false
-    
+  async function speak(text: string, voice: string, volume: number): Promise<void> {
+    if (!window.puter) return
     try {
-      const validVoice = getValidVoice(voice)
-      const audio = await window.puter.ai.txt2speech(text, {
-        voice: validVoice,
-        engine: 'neural'
-      })
-      
+      const audio = await window.puter.ai.txt2speech(text, { voice: getVoice(voice), engine: 'neural' })
       audio.volume = volume / 100
-      currentAudioRef.current = audio
-      
-      return new Promise((resolve) => {
-        audio.onended = () => resolve(true)
-        audio.onerror = () => resolve(false)
-        audio.play().catch(() => resolve(false))
-      })
-    } catch (error) {
-      console.error('TTS error:', error)
-      return false
-    }
+      audioRef.current = audio
+      await new Promise<void>(r => { audio.onended = () => r(); audio.play() })
+    } catch (e) { console.error(e) }
   }
 
-  function getCurrentSceneLines(): Line[] {
-    const scene = scenes.find(s => s.number === selectedScene)
-    return scene?.lines || []
-  }
-
-  function getAudibleCharacters(): string {
-    const sceneLines = getCurrentSceneLines()
-    const charNames = new Set<string>()
-    sceneLines.forEach(l => {
-      if (l.character && !mutedChars.has(l.character.id)) {
-        charNames.add(l.character.name)
-      }
-    })
-    return Array.from(charNames).join(', ')
-  }
-
-  async function handlePlay() {
-    const sceneLines = getCurrentSceneLines()
-    if (sceneLines.length === 0 || !puterReady) return
-    
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause()
-    }
-    
+  async function play() {
+    if (!puterReady || lines.length === 0) return
     setIsPlaying(true)
     playingRef.current = true
-    
-    for (let i = 0; i < sceneLines.length; i++) {
+
+    for (let i = 0; i < lines.length; i++) {
       if (!playingRef.current) break
-      
-      setCurrentLineIndex(i)
-      const line = sceneLines[i]
+      setCurrentLine(i)
+      const line = lines[i]
       const charId = line.character?.id
-      
-      // Skip if muted or solo mode active and not in solo
-      const isMuted = charId && mutedChars.has(charId)
-      const isSoloActive = soloChars.size > 0
-      const isInSolo = charId && soloChars.has(charId)
-      const isMyRole = charId === myRole
-      
-      if (isMuted || (isSoloActive && !isInSolo) || isMyRole) {
-        await new Promise(r => setTimeout(r, 800))
+
+      if (line.type === 'direction' || (charId && (muted.has(charId) || charId === myRole))) {
+        await new Promise(r => setTimeout(r, 500))
         continue
       }
-      
-      if (line.type === 'direction') {
-        await new Promise(r => setTimeout(r, 600))
-        continue
-      }
-      
+
       const char = characters.find(c => c.id === charId)
-      const voice = getValidVoice(char?.voice)
-      const volume = volumes[charId || ''] || 80
-      
-      await speakWithPuter(line.content, voice, volume)
+      await speak(line.content, char?.voice || 'Matthew', volumes[charId || ''] || 80)
       await new Promise(r => setTimeout(r, 200))
     }
-    
+
     setIsPlaying(false)
-    setCurrentLineIndex(-1)
+    setCurrentLine(-1)
     playingRef.current = false
   }
 
-  function handleStop() {
+  function stop() {
     playingRef.current = false
     setIsPlaying(false)
-    setCurrentLineIndex(-1)
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause()
-    }
+    setCurrentLine(-1)
+    audioRef.current?.pause()
   }
 
-  function handlePrevLine() {
-    const sceneLines = getCurrentSceneLines()
-    if (currentLineIndex > 0) {
-      setCurrentLineIndex(currentLineIndex - 1)
-    }
-  }
-
-  function handleNextLine() {
-    const sceneLines = getCurrentSceneLines()
-    if (currentLineIndex < sceneLines.length - 1) {
-      setCurrentLineIndex(currentLineIndex + 1)
-    }
-  }
-
-  const dialogueLines = lines.filter(l => l.type === 'dialogue').length
-  const directionLines = lines.filter(l => l.type === 'direction').length
+  const dialogueCount = lines.filter(l => l.type === 'dialogue').length
+  const directionCount = lines.filter(l => l.type === 'direction').length
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Script 
-        src="https://js.puter.com/v2/" 
-        onLoad={() => setPuterReady(true)}
-      />
-      
+      <Script src="https://js.puter.com/v2/" onLoad={() => setPuterReady(true)} />
+
       {/* Header */}
-      <div className="bg-white border-b px-6 py-4">
-        <div className="max-w-7xl mx-auto">
-          <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1 mb-2">
-            ← Back to Dashboard
-          </Link>
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="text-sm text-gray-500 flex items-center gap-2">
-                <span className="w-5 h-5 bg-gray-800 rounded flex items-center justify-center text-white text-xs">S</span>
-                Scriptor Rehearsal
-              </div>
-              <h1 className="text-2xl font-bold mt-1">Script upload to character stems MVP</h1>
-              <p className="text-gray-500 text-sm mt-1">
-                Upload a script, parse characters, assign voices, and rehearse with mute and solo controls.
-              </p>
-              
-              {/* Stats */}
-              <div className="flex gap-8 mt-4">
-                <div className="text-center">
-                  <div className="text-xs text-gray-500">Characters</div>
-                  <div className="text-2xl font-semibold">{characters.length}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-xs text-gray-500">Scenes</div>
-                  <div className="text-2xl font-semibold">{scenes.length || 1}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-xs text-gray-500">Dialogue Lines</div>
-                  <div className="text-2xl font-semibold">{dialogueLines}</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-xs text-gray-500">Directions</div>
-                  <div className="text-2xl font-semibold">{directionLines}</div>
-                </div>
-              </div>
-            </div>
-            
-            {/* Workflow Panel */}
-            <div className="bg-gray-50 rounded-lg p-4 w-64">
-              <div className="text-sm font-medium mb-2">Workflow</div>
-              <div className="text-xs text-gray-500 mb-3">Step through the MVP flow.</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={() => setTab('upload')}
-                  className={`px-3 py-2 rounded text-sm ${tab === 'upload' ? 'bg-gray-800 text-white' : 'bg-white border'}`}
-                >
-                  Upload
-                </button>
-                <button 
-                  onClick={() => setTab('parse')}
-                  className={`px-3 py-2 rounded text-sm ${tab === 'parse' ? 'bg-gray-800 text-white' : 'bg-white border'}`}
-                >
-                  Parse
-                </button>
-                <button 
-                  onClick={() => setTab('voices')}
-                  className={`px-3 py-2 rounded text-sm ${tab === 'voices' ? 'bg-gray-800 text-white' : 'bg-white border'}`}
-                >
-                  Voices
-                </button>
-                <button 
-                  onClick={() => setTab('mixer')}
-                  className={`px-3 py-2 rounded text-sm ${tab === 'mixer' ? 'bg-gray-800 text-white' : 'bg-white border'}`}
-                >
-                  Mixer
-                </button>
-              </div>
-              <div className="mt-4 text-xs text-gray-600">
-                <div>Project: {projectTitle}</div>
-                <div>Selected role: {characters.find(c => c.id === myRole)?.name || 'None'}</div>
-                <div>Mode: {mode} cast</div>
-              </div>
-            </div>
-          </div>
+      <header className="bg-white border-b px-6 py-4">
+        <Link href="/dashboard" className="text-sm text-gray-500 hover:underline">← Back</Link>
+        <h1 className="text-2xl font-bold mt-2">Scriptor Rehearsal</h1>
+        <div className="flex gap-8 mt-4 text-center">
+          <div><div className="text-xs text-gray-500">Characters</div><div className="text-2xl font-bold">{characters.length}</div></div>
+          <div><div className="text-xs text-gray-500">Dialogue</div><div className="text-2xl font-bold">{dialogueCount}</div></div>
+          <div><div className="text-xs text-gray-500">Directions</div><div className="text-2xl font-bold">{directionCount}</div></div>
         </div>
-      </div>
+      </header>
 
-      {/* Tab Navigation */}
-      <div className="bg-white border-b">
-        <div className="max-w-7xl mx-auto flex">
-          {['Upload', 'Parse Review', 'Voice Assignment', 'Mixer'].map((t, i) => {
-            const tabKey = ['upload', 'parse', 'voices', 'mixer'][i]
-            return (
-              <button
-                key={t}
-                onClick={() => setTab(tabKey as typeof tab)}
-                className={`px-6 py-3 text-sm font-medium border-b-2 ${tab === tabKey ? 'border-gray-800 text-gray-800' : 'border-transparent text-gray-500'}`}
-              >
-                {t}
-              </button>
-            )
-          })}
-        </div>
-      </div>
+      {/* Tabs */}
+      <nav className="bg-white border-b flex">
+        {(['upload', 'parse', 'voices', 'mixer'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)} className={`px-6 py-3 text-sm capitalize ${tab === t ? 'border-b-2 border-gray-800 font-medium' : 'text-gray-500'}`}>
+            {t === 'voices' ? 'Voice Assignment' : t}
+          </button>
+        ))}
+      </nav>
 
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto p-6">
-        {/* Upload Tab */}
+      <main className="max-w-6xl mx-auto p-6">
+        {/* Upload */}
         {tab === 'upload' && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
             <h2 className="text-lg font-semibold mb-2">Upload Script</h2>
-            <p className="text-sm text-gray-500 mb-4">Format: CHARACTER NAME: Dialogue text</p>
-            <textarea
-              value={script}
-              onChange={(e) => setScript(e.target.value)}
-              placeholder={`SCENE 1\n\nOSCAR: All right, who's winning?\n\nFELIX: I can't believe you live like this.\n\n[Oscar shrugs]\n\nSCENE 2\n\nOSCAR: That is not the point of the evening.`}
-              className="w-full h-80 p-4 border rounded-lg font-mono text-sm"
-            />
-            <button 
-              onClick={handleSaveScript}
-              disabled={loading || !script.trim()}
-              className="mt-4 px-6 py-2 bg-gray-800 text-white rounded-lg disabled:opacity-50"
-            >
+            <p className="text-sm text-gray-500 mb-4">Format: CHARACTER: Dialogue</p>
+            <textarea value={script} onChange={e => setScript(e.target.value)} placeholder="ROMEO: But soft, what light..." className="w-full h-72 p-4 border rounded font-mono text-sm" />
+            <button onClick={saveScript} disabled={loading || !script.trim()} className="mt-4 px-6 py-2 bg-gray-800 text-white rounded disabled:opacity-50">
               Save & Continue
             </button>
           </div>
         )}
 
-        {/* Parse Tab */}
+        {/* Parse */}
         {tab === 'parse' && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-lg font-semibold mb-2">Parse Script</h2>
-            <p className="text-sm text-gray-500 mb-4">Click below to detect characters and dialogue lines.</p>
-            {savedScript ? (
-              <div>
-                <pre className="bg-gray-50 p-4 rounded-lg text-sm max-h-60 overflow-auto mb-4">
-                  {savedScript}
-                </pre>
-                <button 
-                  onClick={handleParse}
-                  disabled={loading}
-                  className="px-6 py-2 bg-gray-800 text-white rounded-lg disabled:opacity-50"
-                >
-                  {loading ? 'Parsing...' : 'Parse Script'}
-                </button>
-              </div>
-            ) : (
-              <p className="text-gray-500">No script uploaded yet. Go to Upload tab first.</p>
-            )}
+            <h2 className="text-lg font-semibold mb-4">Parse Script</h2>
+            <pre className="bg-gray-50 p-4 rounded text-sm max-h-60 overflow-auto mb-4">{script || 'No script yet'}</pre>
+            <button onClick={parseScript} disabled={loading || !script} className="px-6 py-2 bg-gray-800 text-white rounded disabled:opacity-50">
+              {loading ? 'Parsing...' : 'Parse Script'}
+            </button>
           </div>
         )}
 
-        {/* Voices Tab */}
+        {/* Voices */}
         {tab === 'voices' && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-lg font-semibold mb-2">Voice Assignment</h2>
-            <p className="text-sm text-gray-500 mb-4">Assign a voice to each character.</p>
-            {characters.length === 0 ? (
-              <p className="text-gray-500">No characters found. Parse your script first.</p>
-            ) : (
-              <div className="space-y-4">
-                {characters.map(char => (
-                  <div key={char.id} className="flex items-center gap-4 p-4 border rounded-lg">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: char.color }} />
-                    <div className="flex-1">
-                      <div className="font-medium">{char.name}</div>
-                      <div className="text-sm text-gray-500">{char._count?.lines || 0} lines</div>
-                    </div>
-                    <select
-                      value={getValidVoice(char.voice)}
-                      onChange={(e) => handleVoiceChange(char.id, e.target.value)}
-                      className="border rounded-lg px-3 py-2"
-                    >
-                      {VOICES.map(v => (
-                        <option key={v.id} value={v.id}>{v.name} - {v.style}</option>
-                      ))}
-                    </select>
+            <h2 className="text-lg font-semibold mb-4">Voice Assignment</h2>
+            {characters.map(c => (
+              <div key={c.id} className="flex items-center gap-4 p-4 border-b">
+                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c.color }} />
+                <div className="flex-1 font-medium">{c.name}</div>
+                <select value={getVoice(c.voice)} onChange={e => setVoice(c.id, e.target.value)} className="border rounded px-3 py-2">
+                  {VOICES.map(v => <option key={v.id} value={v.id}>{v.name} - {v.style}</option>)}
+                </select>
+              </div>
+            ))}
+            <button onClick={() => setTab('mixer')} className="mt-4 px-6 py-2 bg-gray-800 text-white rounded">Continue</button>
+          </div>
+        )}
+
+        {/* Mixer */}
+        {tab === 'mixer' && (
+          <div className="grid grid-cols-3 gap-6">
+            {/* Player */}
+            <div className="col-span-2 bg-white rounded-lg p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">Rehearsal Player</h3>
+                <select value={myRole} onChange={e => setMyRole(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                  <option value="">My Role: None</option>
+                  {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2 mb-4">
+                <button onClick={play} disabled={!puterReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
+                <button onClick={stop} className="px-4 py-2 border rounded text-sm">Stop</button>
+              </div>
+              <div className="space-y-2 max-h-96 overflow-auto">
+                {lines.map((line, i) => (
+                  <div key={line.id} className={`p-3 rounded ${i === currentLine ? 'bg-blue-900 text-white' : 'bg-gray-50'} ${line.character && (muted.has(line.character.id) || line.character.id === myRole) ? 'opacity-40' : ''}`}>
+                    {line.character && <span className="text-xs px-2 py-0.5 rounded text-white mr-2" style={{ backgroundColor: line.character.color }}>{line.character.name}</span>}
+                    <span className={line.type === 'direction' ? 'italic text-gray-500' : ''}>{line.content}</span>
                   </div>
                 ))}
-                <button 
-                  onClick={() => setTab('mixer')}
-                  className="px-6 py-2 bg-gray-800 text-white rounded-lg"
-                >
-                  Continue to Mixer
-                </button>
               </div>
-            )}
-          </div>
-        )}
+            </div>
 
-        {/* Mixer Tab */}
-        {tab === 'mixer' && (
-          <div className="grid grid-cols-12 gap-6">
-            {/* Scenes Panel */}
-            <div className="col-span-2">
-              <div className="bg-white rounded-lg p-4 shadow-sm">
-                <h3 className="font-semibold mb-1">Scenes</h3>
-                <p className="text-xs text-gray-500 mb-3">Choose a scene to rehearse.</p>
-                <div className="space-y-2">
-                  {(scenes.length > 0 ? scenes : [{ number: 1, lines }]).map(scene => (
-                    <button
-                      key={scene.number}
-                      onClick={() => setSelectedScene(scene.number)}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm ${selectedScene === scene.number ? 'bg-gray-800 text-white' : 'bg-gray-100'}`}
-                    >
-                      <div className="font-medium">SCENE {scene.number}</div>
-                      <div className="text-xs opacity-70">{scene.lines.length} lines</div>
+            {/* Mixer */}
+            <div className="bg-white rounded-lg p-4 shadow-sm">
+              <h3 className="font-semibold mb-4">Mixer</h3>
+              {characters.map(c => (
+                <div key={c.id} className="mb-4 pb-4 border-b">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-medium">{c.name}</span>
+                    <button onClick={() => setMuted(m => { const n = new Set(m); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} className={`px-2 py-1 rounded text-xs ${muted.has(c.id) ? 'bg-red-500 text-white' : 'bg-gray-100'}`}>
+                      {muted.has(c.id) ? 'Muted' : 'Mute'}
                     </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Rehearsal Player */}
-            <div className="col-span-6">
-              <div className="bg-white rounded-lg p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="font-semibold">Rehearsal Player</h3>
-                    <div className="text-xs text-gray-500">SCENE {selectedScene}</div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={mode}
-                      onChange={(e) => setMode(e.target.value as 'full' | 'solo')}
-                      className="border rounded px-2 py-1 text-sm"
-                    >
-                      <option value="full">Full Cast</option>
-                      <option value="solo">Solo Mode</option>
-                    </select>
-                    <select
-                      value={myRole}
-                      onChange={(e) => setMyRole(e.target.value)}
-                      className="border rounded px-2 py-1 text-sm"
-                    >
-                      <option value="">Select Role</option>
-                      {characters.map(c => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <input type="range" min="0" max="100" value={volumes[c.id] || 80} onChange={e => setVolumes(v => ({ ...v, [c.id]: +e.target.value }))} className="w-full" />
                 </div>
-
-                {/* Controls */}
-                <div className="flex items-center gap-2 mb-4">
-                  <button 
-                    onClick={handlePlay}
-                    disabled={!puterReady || isPlaying}
-                    className="flex items-center gap-1 px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50"
-                  >
-                    <span>▶</span> Play
-                  </button>
-                  <button 
-                    onClick={handleStop}
-                    className="px-4 py-2 border rounded text-sm"
-                  >
-                    Stop
-                  </button>
-                  <button 
-                    onClick={handlePrevLine}
-                    className="px-4 py-2 border rounded text-sm"
-                  >
-                    Prev Line
-                  </button>
-                  <button 
-                    onClick={handleNextLine}
-                    className="px-4 py-2 border rounded text-sm"
-                  >
-                    Next Line
-                  </button>
-                </div>
-
-                <div className="text-xs text-gray-500 mb-4">
-                  Audible now: {getAudibleCharacters() || 'None'}
-                </div>
-
-                {/* Lines */}
-                <div className="space-y-3 max-h-96 overflow-auto">
-                  {getCurrentSceneLines().map((line, i) => {
-                    const isCurrent = i === currentLineIndex
-                    const isMuted = line.character && mutedChars.has(line.character.id)
-                    const isMyLine = line.character?.id === myRole
-                    
-                    return (
-                      <div
-                        key={line.id}
-                        className={`p-3 rounded-lg transition-all ${
-                          isCurrent ? 'bg-blue-900 text-white' : 
-                          line.type === 'direction' ? 'bg-gray-50 text-gray-600 italic' : 'bg-gray-50'
-                        } ${isMuted || isMyLine ? 'opacity-50' : ''}`}
-                      >
-                        {line.character && (
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-xs bg-gray-800 text-white px-2 py-0.5 rounded">
-                              SCENE {selectedScene}
-                            </span>
-                            <span 
-                              className="text-xs px-2 py-0.5 rounded text-white"
-                              style={{ backgroundColor: line.character.color }}
-                            >
-                              {line.character.name}
-                            </span>
-                          </div>
-                        )}
-                        <div className={line.type === 'direction' ? 'text-sm' : ''}>
-                          {line.content}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Mixer Panel */}
-            <div className="col-span-4">
-              <div className="bg-white rounded-lg p-4 shadow-sm">
-                <h3 className="font-semibold mb-1">Mixer</h3>
-                <p className="text-xs text-gray-500 mb-4">Mute, solo, and balance each role.</p>
-                
-                <div className="space-y-4">
-                  {characters.map(char => (
-                    <div key={char.id} className="border-b pb-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <div>
-                          <div className="font-medium">{char.name}</div>
-                          <div className="text-xs text-gray-500">{getVoiceStyle(getValidVoice(char.voice))}</div>
-                        </div>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => toggleMute(char.id)}
-                            className={`w-8 h-8 rounded text-sm font-medium ${mutedChars.has(char.id) ? 'bg-red-500 text-white' : 'bg-gray-100'}`}
-                          >
-                            M
-                          </button>
-                          <button
-                            onClick={() => toggleSolo(char.id)}
-                            className={`w-8 h-8 rounded text-sm font-medium ${soloChars.has(char.id) ? 'bg-yellow-500 text-white' : 'bg-gray-100'}`}
-                          >
-                            S
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">🔊 Volume</span>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={volumes[char.id] || 80}
-                          onChange={(e) => setVolumes(v => ({ ...v, [char.id]: parseInt(e.target.value) }))}
-                          className="flex-1 accent-blue-600"
-                        />
-                        <span className="text-xs text-gray-500 w-8">{volumes[char.id] || 80}%</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <button className="mt-4 w-full px-4 py-2 border rounded-lg text-sm flex items-center justify-center gap-2">
-                  <span>💾</span> Save Preset
-                </button>
-              </div>
+              ))}
             </div>
           </div>
         )}
-      </div>
+      </main>
     </div>
   )
 }
