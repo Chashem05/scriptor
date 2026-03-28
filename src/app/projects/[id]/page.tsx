@@ -4,19 +4,19 @@ import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 
-type Character = { id: string; name: string; voice: string; color: string; _count?: { lines: number } }
+type Character = { 
+  id: string
+  name: string
+  voice: string
+  color: string
+  stability?: number
+  similarity?: number
+  style?: number
+  speed?: number
+  _count?: { lines: number } 
+}
 type Line = { id: string; lineNumber: number; type: string; content: string; character: Character | null }
-
-const VOICES = [
-  { id: 'josh', name: 'Josh', style: 'Male, Deep' },
-  { id: 'adam', name: 'Adam', style: 'Male, Deep' },
-  { id: 'antoni', name: 'Antoni', style: 'Male, Warm' },
-  { id: 'arnold', name: 'Arnold', style: 'Male, Crisp' },
-  { id: 'sam', name: 'Sam', style: 'Male, Raspy' },
-  { id: 'rachel', name: 'Rachel', style: 'Female, Calm' },
-  { id: 'domi', name: 'Domi', style: 'Female, Strong' },
-  { id: 'bella', name: 'Bella', style: 'Female, Soft' },
-]
+type Voice = { id: string; name: string; style: string }
 
 export default function ProjectPage() {
   const { id } = useParams() as { id: string }
@@ -24,6 +24,7 @@ export default function ProjectPage() {
   const [script, setScript] = useState('')
   const [characters, setCharacters] = useState<Character[]>([])
   const [lines, setLines] = useState<Line[]>([])
+  const [voices, setVoices] = useState<Voice[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [myRole, setMyRole] = useState('')
@@ -31,17 +32,19 @@ export default function ProjectPage() {
   const [currentLine, setCurrentLine] = useState(-1)
   const [muted, setMuted] = useState<Set<string>>(new Set())
   const [volumes, setVolumes] = useState<Record<string, number>>({})
+  const [charSettings, setCharSettings] = useState<Record<string, { stability: number; similarity: number; style: number; speed: number }>>({})
   const [ttsReady, setTtsReady] = useState(false)
   const playingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  useEffect(() => { loadData(); checkTTS() }, [id])
+  useEffect(() => { loadData(); loadVoices() }, [id])
 
-  async function checkTTS() {
+  async function loadVoices() {
     try {
       const res = await fetch('/api/tts')
       const data = await res.json()
       setTtsReady(data.configured)
+      if (data.voices) setVoices(data.voices)
     } catch { setTtsReady(false) }
   }
 
@@ -59,6 +62,17 @@ export default function ProjectPage() {
     if (Array.isArray(charData)) {
       setCharacters(charData)
       setVolumes(Object.fromEntries(charData.map((c: Character) => [c.id, 80])))
+      // Initialize voice settings for each character
+      const settings: Record<string, { stability: number; similarity: number; style: number; speed: number }> = {}
+      charData.forEach((c: Character) => {
+        settings[c.id] = {
+          stability: c.stability ?? 0.5,
+          similarity: c.similarity ?? 0.75,
+          style: c.style ?? 0.0,
+          speed: c.speed ?? 1.0
+        }
+      })
+      setCharSettings(settings)
     }
     if (Array.isArray(linesData)) setLines(linesData)
   }
@@ -91,16 +105,28 @@ export default function ProjectPage() {
     setCharacters(c => c.map(x => x.id === charId ? { ...x, voice } : x))
   }
 
-  function getVoice(v?: string) {
-    return VOICES.find(x => x.id === v)?.id || 'josh'
+  function updateCharSetting(charId: string, key: string, value: number) {
+    setCharSettings(prev => ({
+      ...prev,
+      [charId]: { ...prev[charId], [key]: value }
+    }))
   }
 
-  async function speak(text: string, voice: string, volume: number): Promise<boolean> {
+  async function speak(text: string, voice: string, charId: string, volume: number): Promise<boolean> {
+    const settings = charSettings[charId] || { stability: 0.5, similarity: 0.75, style: 0, speed: 1 }
+    
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: getVoice(voice) })
+        body: JSON.stringify({ 
+          text, 
+          voice,
+          stability: settings.stability,
+          similarity: settings.similarity,
+          style: settings.style,
+          speed: settings.speed,
+        })
       })
       
       if (!res.ok) {
@@ -147,7 +173,7 @@ export default function ProjectPage() {
       }
 
       const char = characters.find(c => c.id === charId)
-      await speak(line.content, char?.voice || 'josh', volumes[charId || ''] || 80)
+      await speak(line.content, char?.voice || 'josh', charId || '', volumes[charId || ''] || 80)
       await new Promise(r => setTimeout(r, 200))
     }
 
@@ -163,10 +189,12 @@ export default function ProjectPage() {
     audioRef.current?.pause()
   }
 
-  async function testVoice() {
-    setMessage('Testing ElevenLabs...')
-    const success = await speak("Hello! This is a test of ElevenLabs voice.", 'josh', 80)
-    setMessage(success ? '✓ ElevenLabs working!' : '✗ ElevenLabs failed')
+  async function testVoice(charId: string) {
+    const char = characters.find(c => c.id === charId)
+    if (!char) return
+    setMessage(`Testing ${char.name}...`)
+    const success = await speak("Hello! This is a test of my voice.", char.voice || 'josh', charId, 80)
+    setMessage(success ? `✓ ${char.name} sounds great!` : '✗ Voice test failed')
   }
 
   const dialogueCount = lines.filter(l => l.type === 'dialogue').length
@@ -179,12 +207,13 @@ export default function ProjectPage() {
         <Link href="/dashboard" className="text-sm text-gray-500 hover:underline">← Back</Link>
         <h1 className="text-2xl font-bold mt-2">Scriptor Rehearsal</h1>
         <p className="text-sm text-gray-500 mt-1">
-          {ttsReady ? '✓ ElevenLabs connected' : '⚠️ Add ELEVENLABS_API_KEY in Render'}
+          {ttsReady ? '✓ ElevenLabs connected (Paid)' : '⚠️ Add ELEVENLABS_API_KEY in Render'}
         </p>
         <div className="flex gap-8 mt-4 text-center">
           <div><div className="text-xs text-gray-500">Characters</div><div className="text-2xl font-bold">{characters.length}</div></div>
           <div><div className="text-xs text-gray-500">Dialogue</div><div className="text-2xl font-bold">{dialogueCount}</div></div>
           <div><div className="text-xs text-gray-500">Directions</div><div className="text-2xl font-bold">{directionCount}</div></div>
+          <div><div className="text-xs text-gray-500">Voices</div><div className="text-2xl font-bold">{voices.length}</div></div>
         </div>
       </header>
 
@@ -199,7 +228,7 @@ export default function ProjectPage() {
 
       {/* Message */}
       {message && (
-        <div className={`max-w-6xl mx-auto mt-4 px-4`}>
+        <div className="max-w-6xl mx-auto mt-4 px-4">
           <div className={`p-3 rounded ${message.includes('✗') || message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
             {message}
           </div>
@@ -233,17 +262,107 @@ export default function ProjectPage() {
         {/* Voices */}
         {tab === 'voices' && (
           <div className="bg-white rounded-lg p-6 shadow-sm">
-            <h2 className="text-lg font-semibold mb-4">Voice Assignment (ElevenLabs)</h2>
-            {characters.map(c => (
-              <div key={c.id} className="flex items-center gap-4 p-4 border-b">
-                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c.color }} />
-                <div className="flex-1 font-medium">{c.name}</div>
-                <select value={getVoice(c.voice)} onChange={e => setVoice(c.id, e.target.value)} className="border rounded px-3 py-2">
-                  {VOICES.map(v => <option key={v.id} value={v.id}>{v.name} - {v.style}</option>)}
-                </select>
-              </div>
-            ))}
-            <button onClick={() => setTab('mixer')} className="mt-4 px-6 py-2 bg-gray-800 text-white rounded">Continue</button>
+            <h2 className="text-lg font-semibold mb-2">Voice Assignment</h2>
+            <p className="text-sm text-gray-500 mb-4">Choose a voice and fine-tune the settings for each character</p>
+            
+            {characters.map(c => {
+              const settings = charSettings[c.id] || { stability: 0.5, similarity: 0.75, style: 0, speed: 1 }
+              return (
+                <div key={c.id} className="p-4 border rounded-lg mb-4">
+                  <div className="flex items-center gap-4 mb-4">
+                    <div className="w-4 h-4 rounded-full" style={{ backgroundColor: c.color }} />
+                    <div className="flex-1 font-semibold text-lg">{c.name}</div>
+                    <button onClick={() => testVoice(c.id)} className="px-3 py-1 text-sm border rounded hover:bg-gray-50">
+                      🔊 Test
+                    </button>
+                  </div>
+                  
+                  {/* Voice Selection */}
+                  <div className="mb-4">
+                    <label className="text-sm text-gray-600 block mb-1">Voice</label>
+                    <select 
+                      value={c.voice || 'josh'} 
+                      onChange={e => setVoice(c.id, e.target.value)} 
+                      className="w-full border rounded px-3 py-2"
+                    >
+                      <optgroup label="Male Voices">
+                        {voices.filter(v => ['adam','antoni','arnold','brian','callum','charlie','clyde','daniel','dave','ethan','fin','george','harry','james','jeremy','josh','liam','marcus','michael','patrick','sam','thomas'].includes(v.id)).map(v => (
+                          <option key={v.id} value={v.id}>{v.name} - {v.style}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Female Voices">
+                        {voices.filter(v => ['alice','aria','bella','charlotte','domi','dorothy','elli','emily','freya','gigi','glinda','grace','jessie','lily','matilda','mimi','nicole','rachel','serena'].includes(v.id)).map(v => (
+                          <option key={v.id} value={v.id}>{v.name} - {v.style}</option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  {/* Voice Settings Grid */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm text-gray-600 flex justify-between">
+                        <span>Stability</span>
+                        <span className="text-gray-400">{Math.round(settings.stability * 100)}%</span>
+                      </label>
+                      <input 
+                        type="range" min="0" max="100" 
+                        value={settings.stability * 100} 
+                        onChange={e => updateCharSetting(c.id, 'stability', +e.target.value / 100)}
+                        className="w-full"
+                      />
+                      <p className="text-xs text-gray-400">Lower = more emotional, Higher = more consistent</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm text-gray-600 flex justify-between">
+                        <span>Clarity + Similarity</span>
+                        <span className="text-gray-400">{Math.round(settings.similarity * 100)}%</span>
+                      </label>
+                      <input 
+                        type="range" min="0" max="100" 
+                        value={settings.similarity * 100} 
+                        onChange={e => updateCharSetting(c.id, 'similarity', +e.target.value / 100)}
+                        className="w-full"
+                      />
+                      <p className="text-xs text-gray-400">How closely to match original voice</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm text-gray-600 flex justify-between">
+                        <span>Style Exaggeration</span>
+                        <span className="text-gray-400">{Math.round(settings.style * 100)}%</span>
+                      </label>
+                      <input 
+                        type="range" min="0" max="100" 
+                        value={settings.style * 100} 
+                        onChange={e => updateCharSetting(c.id, 'style', +e.target.value / 100)}
+                        className="w-full"
+                      />
+                      <p className="text-xs text-gray-400">Amplify the speaker's style (uses more compute)</p>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm text-gray-600 flex justify-between">
+                        <span>Speed</span>
+                        <span className="text-gray-400">{settings.speed.toFixed(1)}x</span>
+                      </label>
+                      <input 
+                        type="range" min="70" max="120" 
+                        value={settings.speed * 100} 
+                        onChange={e => updateCharSetting(c.id, 'speed', +e.target.value / 100)}
+                        className="w-full"
+                      />
+                      <p className="text-xs text-gray-400">0.7x (slow) to 1.2x (fast)</p>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            
+            <button onClick={() => setTab('mixer')} className="mt-4 px-6 py-2 bg-gray-800 text-white rounded">
+              Continue to Mixer
+            </button>
           </div>
         )}
 
@@ -260,7 +379,6 @@ export default function ProjectPage() {
                 </select>
               </div>
               <div className="flex gap-2 mb-4">
-                <button onClick={testVoice} className="px-4 py-2 border rounded text-sm">🔊 Test</button>
                 <button onClick={play} disabled={!ttsReady || isPlaying} className="px-4 py-2 bg-gray-800 text-white rounded text-sm disabled:opacity-50">▶ Play</button>
                 <button onClick={stop} className="px-4 py-2 border rounded text-sm">Stop</button>
               </div>
@@ -280,12 +398,19 @@ export default function ProjectPage() {
               {characters.map(c => (
                 <div key={c.id} className="mb-4 pb-4 border-b">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="font-medium">{c.name}</span>
+                    <div>
+                      <span className="font-medium">{c.name}</span>
+                      <span className="text-xs text-gray-400 ml-2">{voices.find(v => v.id === c.voice)?.name || 'Josh'}</span>
+                    </div>
                     <button onClick={() => setMuted(m => { const n = new Set(m); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} className={`px-2 py-1 rounded text-xs ${muted.has(c.id) ? 'bg-red-500 text-white' : 'bg-gray-100'}`}>
                       {muted.has(c.id) ? 'Muted' : 'Mute'}
                     </button>
                   </div>
-                  <input type="range" min="0" max="100" value={volumes[c.id] || 80} onChange={e => setVolumes(v => ({ ...v, [c.id]: +e.target.value }))} className="w-full" />
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs">🔊</span>
+                    <input type="range" min="0" max="100" value={volumes[c.id] || 80} onChange={e => setVolumes(v => ({ ...v, [c.id]: +e.target.value }))} className="flex-1" />
+                    <span className="text-xs w-8">{volumes[c.id] || 80}%</span>
+                  </div>
                 </div>
               ))}
             </div>
