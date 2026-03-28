@@ -19,15 +19,17 @@ model User {
 }
 
 model Project {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
+  id          String      @id @default(cuid())
+  userId      String      @map("user_id")
   title       String
   description String?
-  status      String   @default("DRAFT")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status      String      @default("DRAFT")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   script      Script?
+  characters  Character[]
+  lines       Line[]
   @@index([userId])
   @@map("projects")
 }
@@ -41,4 +43,29 @@ model Script {
   updatedAt DateTime @updatedAt @map("updated_at")
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   @@map("scripts")
+}
+
+model Character {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  name      String
+  voice     String   @default("default")
+  color     String   @default("#6366f1")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  lines     Line[]
+  @@unique([projectId, name])
+  @@map("characters")
+}
+
+model Line {
+  id          String    @id @default(cuid())
+  projectId   String    @map("project_id")
+  characterId String?   @map("character_id")
+  lineNumber  Int       @map("line_number")
+  type        String    @default("dialogue")
+  content     String    @db.Text
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  character   Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  @@index([projectId])
+  @@map("lines")
 }
